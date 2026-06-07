@@ -8,13 +8,18 @@ import {
   FileImage,
   FileText,
   FileUp,
+  Fingerprint,
   Loader2,
+  MapPinned,
   Play,
   ScrollText,
+  ShieldCheck,
   UploadCloud,
+  type LucideIcon,
 } from "lucide-react";
 import type {
   AnalysisJobResponse,
+  AttributionRecord,
   EvidenceActivityEvent,
   EvidenceListResponse,
   EvidenceRecord,
@@ -29,7 +34,7 @@ import {
 import { cn } from "@/lib/utils";
 
 const acceptedTypes = ["image/jpeg", "image/png", "application/pdf"];
-const tabs = ["Visual Analysis", "OCR Results", "Timeline"] as const;
+const tabs = ["Visual Analysis", "OCR Results", "Attribution", "Timeline"] as const;
 
 type InvestigationTab = (typeof tabs)[number];
 
@@ -81,6 +86,17 @@ export default function InvestigationWorkspace() {
     return evidenceData.activity
       .filter((event) => event.evidenceId === selectedEvidence.evidenceId)
       .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+  }, [evidenceData, selectedEvidence]);
+
+  const selectedAttribution = useMemo(() => {
+    if (!evidenceData || !selectedEvidence) {
+      return null;
+    }
+
+    return (
+      evidenceData.attributions.find((report) => report.evidenceId === selectedEvidence.evidenceId) ??
+      null
+    );
   }, [evidenceData, selectedEvidence]);
 
   async function uploadEvidence(file: File) {
@@ -148,6 +164,7 @@ export default function InvestigationWorkspace() {
       }
 
       await loadEvidence();
+      setActiveTab("Attribution");
     } catch (analysisError) {
       setError(analysisError instanceof Error ? analysisError.message : "Analysis failed.");
       await loadEvidence();
@@ -208,6 +225,14 @@ export default function InvestigationWorkspace() {
             {activeTab === "OCR Results" && (
               <OcrResultsPanel
                 evidence={selectedEvidence}
+                analyzing={analyzingId === selectedEvidence?.evidenceId}
+              />
+            )}
+
+            {activeTab === "Attribution" && (
+              <AttributionPanel
+                evidence={selectedEvidence}
+                attribution={selectedAttribution}
                 analyzing={analyzingId === selectedEvidence?.evidenceId}
               />
             )}
@@ -532,6 +557,104 @@ function TimelinePanel({
   );
 }
 
+function AttributionPanel({
+  evidence,
+  attribution,
+  analyzing,
+}: {
+  evidence: EvidenceRecord | null;
+  attribution: AttributionRecord | null;
+  analyzing: boolean;
+}) {
+  if (!evidence) {
+    return <EmptyPanel icon={Fingerprint} text="Attribution reports will appear after OCR analysis." />;
+  }
+
+  if (analyzing || evidence.ocrStatus === "processing" || evidence.ocrStatus === "queued") {
+    return (
+      <div className="h-full min-h-[440px] border border-white/10 bg-black flex flex-col items-center justify-center gap-4 text-white/55">
+        <Loader2 className="w-8 h-8 animate-spin" />
+        <div className="text-sm uppercase tracking-widest">Building attribution report...</div>
+      </div>
+    );
+  }
+
+  if (!attribution) {
+    return <EmptyPanel icon={Fingerprint} text="Run analysis to match OCR text against the registry." />;
+  }
+
+  if (attribution.status === "no-match") {
+    return (
+      <div className="h-full min-h-[440px] border border-white/10 bg-black p-8 flex flex-col justify-center">
+        <div className="text-xs uppercase tracking-[0.2em] text-white/45">Attribution Report</div>
+        <div className="text-4xl font-heading uppercase tracking-widest text-white mt-4">
+          No Match Found
+        </div>
+        <p className="text-sm text-white/50 mt-4 max-w-xl">
+          OCR completed, but the extracted text did not confidently match a registered paper.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="h-full min-h-[500px] border border-white/10 bg-black p-6">
+      <div className="flex items-start justify-between gap-6 border-b border-white/10 pb-6">
+        <div>
+          <div className="text-xs uppercase tracking-[0.2em] text-white/45">Attribution Report</div>
+          <div className="text-4xl font-heading uppercase tracking-widest text-white mt-4">
+            Match Found
+          </div>
+        </div>
+        <div className="bg-white text-black px-4 py-2 text-xs font-bold uppercase tracking-widest">
+          {attribution.status}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-5 mt-6">
+        <div className="lg:col-span-2 border border-white/10 bg-white/[0.02] p-6">
+          <div className="flex items-center gap-3 text-white/55 mb-6">
+            <ShieldCheck className="w-5 h-5" />
+            <span className="text-xs uppercase tracking-[0.2em]">Paper Identification</span>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+            <InfoBlock label="Paper" value={attribution.matchedPaperId ?? "Unknown"} />
+            <InfoBlock label="Exam" value={attribution.matchedExam ?? "Unknown"} />
+            <InfoBlock label="Set" value={attribution.matchedSet ?? "Unknown"} />
+            <InfoBlock label="Confidence" value={`${attribution.confidence}%`} />
+          </div>
+        </div>
+
+        <div className="border border-white/10 bg-white text-black p-6">
+          <div className="text-xs uppercase tracking-[0.2em] text-black/50">Match</div>
+          <div className="text-5xl font-heading mt-4">{attribution.confidence}%</div>
+          <div className="text-xs uppercase tracking-widest text-black/60 mt-2">
+            Registry Confidence
+          </div>
+        </div>
+      </div>
+
+      <div className="border border-white/10 bg-white/[0.02] p-6 mt-5">
+        <div className="flex items-center gap-3 text-white/55 mb-6">
+          <MapPinned className="w-5 h-5" />
+          <span className="text-xs uppercase tracking-[0.2em]">Source Identification</span>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-4 gap-5">
+          <InfoBlock label="Center" value={attribution.centerCode ?? "Unknown"} />
+          <InfoBlock label="Printer" value={attribution.printerId ?? "Unknown"} />
+          <InfoBlock label="Batch" value={attribution.batchId ?? "Unknown"} />
+          <InfoBlock label="Watermark" value={attribution.matchedWatermarkId ?? "Unknown"} />
+        </div>
+        {attribution.centerName && (
+          <div className="mt-5 pt-5 border-t border-white/10 text-sm text-white/65">
+            {attribution.centerName}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function InvestigationQueue({
   evidence,
   selectedEvidenceId,
@@ -618,7 +741,7 @@ function InfoMetric({ label, value }: { label: string; value: string }) {
   );
 }
 
-function EmptyPanel({ icon: Icon, text }: { icon: typeof FileUp; text: string }) {
+function EmptyPanel({ icon: Icon, text }: { icon: LucideIcon; text: string }) {
   return (
     <div className="h-full min-h-[440px] border border-dashed border-white/10 flex flex-col items-center justify-center gap-4 text-white/40">
       <Icon className="w-8 h-8" />

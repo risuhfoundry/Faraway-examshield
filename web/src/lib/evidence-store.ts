@@ -3,15 +3,18 @@ import { mkdir, readdir, readFile, writeFile } from "fs/promises";
 import path from "path";
 import type {
   AnalysisJob,
+  AttributionRecord,
   EvidenceActivityEvent,
   EvidenceListResponse,
   EvidenceRecord,
 } from "./evidence-types";
+import { matchPaperFromOcr } from "./paper-matcher";
 
 const UPLOAD_ROOT = path.resolve(process.cwd(), "..", "apps", "api", "uploads", "evidence");
 const FILES_DIR = path.join(UPLOAD_ROOT, "files");
 const RECORDS_DIR = path.join(UPLOAD_ROOT, "records");
 const JOBS_DIR = path.join(UPLOAD_ROOT, "jobs");
+const ATTRIBUTIONS_DIR = path.join(UPLOAD_ROOT, "attributions");
 const ACTIVITY_FILE = path.join(UPLOAD_ROOT, "activity.json");
 
 const ALLOWED_TYPES = new Set(["image/jpeg", "image/png", "application/pdf"]);
@@ -28,6 +31,7 @@ export async function ensureEvidenceStorage() {
   await mkdir(FILES_DIR, { recursive: true });
   await mkdir(RECORDS_DIR, { recursive: true });
   await mkdir(JOBS_DIR, { recursive: true });
+  await mkdir(ATTRIBUTIONS_DIR, { recursive: true });
 }
 
 export function validateEvidenceFile(file: File) {
@@ -104,11 +108,13 @@ export async function listEvidence(): Promise<EvidenceListResponse> {
     .sort((a, b) => new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime());
   const activity = await readActivity();
   const jobs = await readAnalysisJobs();
+  const attributions = await readAttributions();
 
   return {
     evidence,
     activity,
     jobs,
+    attributions,
     stats: {
       totalEvidence: evidence.length,
       pendingAnalysis: evidence.filter((item) => item.status === "pending-analysis").length,
@@ -134,8 +140,12 @@ export async function getEvidenceBundle(evidenceId: string) {
 
   const activity = (await readActivity()).filter((event) => event.evidenceId === evidenceId);
   const jobs = (await readAnalysisJobs()).filter((job) => job.evidenceId === evidenceId);
+  const attributions = (await readAttributions()).filter(
+    (attribution) => attribution.evidenceId === evidenceId,
+  );
+  const attribution = attributions[0] ?? null;
 
-  return { evidence, activity, jobs };
+  return { evidence, activity, jobs, attribution, attributions };
 }
 
 export async function getEvidenceAsset(evidenceId: string) {
@@ -290,6 +300,103 @@ export async function completeAnalysisJob(
   return { evidence, job: updatedJob, activity: [completedEvent, storedEvent] };
 }
 
+export async function runAttributionForEvidence(evidenceId: string, ocrText: string) {
+  const now = new Date().toISOString();
+  const startedEvent: EvidenceActivityEvent = {
+    eventId: randomUUID(),
+    type: "attribution-started",
+    title: "Attribution Started",
+    evidenceId,
+    timestamp: now,
+  };
+  await appendActivity(startedEvent);
+
+  const match = matchPaperFromOcr(ocrText);
+
+  if (!match) {
+    const attribution: AttributionRecord = {
+      attributionId: getAttributionId(evidenceId),
+      evidenceId,
+      matchedPaperId: null,
+      matchedExam: null,
+      matchedSet: null,
+      confidence: 0,
+      centerCode: null,
+      printerId: null,
+      batchId: null,
+      status: "no-match",
+      matchedWatermarkId: null,
+      centerName: null,
+      createdAt: new Date().toISOString(),
+    };
+
+    await writeAttribution(attribution);
+    const completedEvent: EvidenceActivityEvent = {
+      eventId: randomUUID(),
+      type: "attribution-complete",
+      title: "Attribution Complete",
+      evidenceId,
+      timestamp: attribution.createdAt,
+      detail: ocrText.trim() ? "No registry match found" : "No OCR text available",
+    };
+    await appendActivity(completedEvent);
+
+    return { attribution, activity: [startedEvent, completedEvent] };
+  }
+
+  const attribution: AttributionRecord = {
+    attributionId: getAttributionId(evidenceId),
+    evidenceId,
+    matchedPaperId: match.matchedPaperId,
+    matchedExam: match.matchedExam,
+    matchedSet: match.matchedSet,
+    confidence: match.confidence,
+    centerCode: match.centerCode,
+    printerId: match.printerId,
+    batchId: match.batchId,
+    status: match.status,
+    matchedWatermarkId: match.matchedWatermarkId,
+    centerName: match.centerName,
+    createdAt: new Date().toISOString(),
+  };
+
+  await writeAttribution(attribution);
+
+  const matchedEvent: EvidenceActivityEvent = {
+    eventId: randomUUID(),
+    type: "paper-matched",
+    title: "Paper Matched",
+    evidenceId,
+    timestamp: attribution.createdAt,
+    detail: `${match.matchedPaperId} at ${match.confidence}% confidence`,
+  };
+  const sourceEvent: EvidenceActivityEvent = {
+    eventId: randomUUID(),
+    type: "source-identified",
+    title: "Source Identified",
+    evidenceId,
+    timestamp: attribution.createdAt,
+    detail: `${match.centerCode} / ${match.printerId} / ${match.batchId}`,
+  };
+  const completedEvent: EvidenceActivityEvent = {
+    eventId: randomUUID(),
+    type: "attribution-complete",
+    title: "Attribution Complete",
+    evidenceId,
+    timestamp: attribution.createdAt,
+    detail: match.status.toUpperCase(),
+  };
+
+  await appendActivity(matchedEvent);
+  await appendActivity(sourceEvent);
+  await appendActivity(completedEvent);
+
+  return {
+    attribution,
+    activity: [startedEvent, matchedEvent, sourceEvent, completedEvent],
+  };
+}
+
 export async function failAnalysisJob(jobId: string, message: string) {
   const job = await getAnalysisJob(jobId);
 
@@ -395,6 +502,24 @@ async function readAnalysisJobs(): Promise<AnalysisJob[]> {
   return jobs.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 }
 
+async function readAttributions(): Promise<AttributionRecord[]> {
+  await ensureEvidenceStorage();
+
+  const entries = await readdir(ATTRIBUTIONS_DIR, { withFileTypes: true });
+  const attributions = await Promise.all(
+    entries
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+      .map(async (entry) => {
+        const raw = await readFile(path.join(ATTRIBUTIONS_DIR, entry.name), "utf8");
+        return JSON.parse(raw) as AttributionRecord;
+      }),
+  );
+
+  return attributions.sort(
+    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+  );
+}
+
 async function getAnalysisJob(jobId: string): Promise<AnalysisJob | null> {
   await ensureEvidenceStorage();
 
@@ -409,6 +534,15 @@ async function getAnalysisJob(jobId: string): Promise<AnalysisJob | null> {
 async function writeAnalysisJob(job: AnalysisJob) {
   await ensureEvidenceStorage();
   await writeFile(path.join(JOBS_DIR, `${job.jobId}.json`), JSON.stringify(job, null, 2), "utf8");
+}
+
+async function writeAttribution(attribution: AttributionRecord) {
+  await ensureEvidenceStorage();
+  await writeFile(
+    path.join(ATTRIBUTIONS_DIR, `${attribution.evidenceId}.json`),
+    JSON.stringify(attribution, null, 2),
+    "utf8",
+  );
 }
 
 async function readActivity(): Promise<EvidenceActivityEvent[]> {
@@ -463,4 +597,9 @@ function normalizeStoredRecord(record: StoredEvidenceRecord): StoredEvidenceReco
     analysisStartedAt: record.analysisStartedAt ?? null,
     analysisCompletedAt: record.analysisCompletedAt ?? null,
   };
+}
+
+function getAttributionId(evidenceId: string) {
+  const suffix = evidenceId.replace(/^EV-/, "");
+  return `ATTR-${suffix}`;
 }

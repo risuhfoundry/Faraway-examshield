@@ -8,6 +8,13 @@ export type EvidenceStatus =
 export type EvidenceRiskLevel = "unknown";
 export type OcrStatus = "not-started" | "queued" | "processing" | "completed" | "failed";
 export type AnalysisJobStatus = "queued" | "processing" | "completed" | "failed";
+export type AttributionStatus =
+  | "registered"
+  | "in_transit"
+  | "received"
+  | "compromised"
+  | "investigating"
+  | "no-match";
 
 export type EvidenceRecord = {
   evidenceId: string;
@@ -38,6 +45,22 @@ export type AnalysisJob = {
   error: string | null;
 };
 
+export type AttributionRecord = {
+  attributionId: string;
+  evidenceId: string;
+  matchedPaperId: string | null;
+  matchedExam: string | null;
+  matchedSet: string | null;
+  confidence: number;
+  centerCode: string | null;
+  printerId: string | null;
+  batchId: string | null;
+  status: AttributionStatus;
+  matchedWatermarkId: string | null;
+  centerName: string | null;
+  createdAt: string;
+};
+
 export type EvidenceActivityEvent = {
   eventId: string;
   type:
@@ -45,6 +68,10 @@ export type EvidenceActivityEvent = {
     | "analysis-queued"
     | "ocr-started"
     | "ocr-complete"
+    | "attribution-started"
+    | "paper-matched"
+    | "source-identified"
+    | "attribution-complete"
     | "analysis-failed"
     | "results-stored";
   title:
@@ -53,6 +80,10 @@ export type EvidenceActivityEvent = {
     | "Analysis Queued"
     | "OCR Started"
     | "OCR Complete"
+    | "Attribution Started"
+    | "Paper Matched"
+    | "Source Identified"
+    | "Attribution Complete"
     | "Analysis Failed"
     | "Results Stored";
   evidenceId: string;
@@ -65,6 +96,7 @@ export type EvidenceListResponse = {
   evidence: EvidenceRecord[];
   activity: EvidenceActivityEvent[];
   jobs: AnalysisJob[];
+  attributions: AttributionRecord[];
   stats: {
     totalEvidence: number;
     pendingAnalysis: number;
@@ -84,5 +116,6 @@ export type AnalysisJobResponse = {
   message: "Analysis Queued" | "Analysis Complete" | "Analysis Failed";
   evidence: EvidenceRecord;
   job: AnalysisJob;
+  attribution?: AttributionRecord | null;
   activity: EvidenceActivityEvent[];
 };

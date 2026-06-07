@@ -50,4 +50,6 @@ apps/api/uploads/evidence/records/*
 !apps/api/uploads/evidence/records/.gitkeep
 apps/api/uploads/evidence/jobs/*
 !apps/api/uploads/evidence/jobs/.gitkeep
+apps/api/uploads/evidence/attributions/*
+!apps/api/uploads/evidence/attributions/.gitkeep
 apps/api/uploads/evidence/activity.json

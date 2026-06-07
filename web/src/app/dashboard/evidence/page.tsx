@@ -10,6 +10,7 @@ const emptyState: EvidenceListResponse = {
   evidence: [],
   activity: [],
   jobs: [],
+  attributions: [],
   stats: {
     totalEvidence: 0,
     pendingAnalysis: 0,
@@ -109,7 +110,12 @@ export default function EvidenceCenter() {
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 p-4">
-          {data.evidence.map((item, index) => (
+          {data.evidence.map((item, index) => {
+            const attribution = data.attributions.find(
+              (report) => report.evidenceId === item.evidenceId,
+            );
+
+            return (
             <motion.div
               key={item.evidenceId}
               initial={{ opacity: 0, y: 8 }}
@@ -144,7 +150,7 @@ export default function EvidenceCenter() {
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs border-t border-white/10 pt-4">
+              <div className="grid grid-cols-1 sm:grid-cols-4 gap-4 text-xs border-t border-white/10 pt-4">
                 <div>
                   <div className="text-white/35 uppercase tracking-widest mb-1">Time</div>
                   <div className="text-white/80">{formatEvidenceDateTime(item.uploadedAt)}</div>
@@ -161,9 +167,16 @@ export default function EvidenceCenter() {
                     {item.ocrProcessingTimeMs === null ? "Pending" : `${item.ocrProcessingTimeMs} ms`}
                   </div>
                 </div>
+                <div>
+                  <div className="text-white/35 uppercase tracking-widest mb-1">Attribution</div>
+                  <div className="text-white/80">
+                    {attribution?.matchedPaperId ?? (attribution ? "No Match" : "Pending")}
+                  </div>
+                </div>
               </div>
             </motion.div>
-          ))}
+            );
+          })}
 
           {!loading && data.evidence.length === 0 && (
             <div className="col-span-full p-10 border border-dashed border-white/10 text-center text-sm text-white/45">

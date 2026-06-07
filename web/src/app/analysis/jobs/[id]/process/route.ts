@@ -3,6 +3,7 @@ import {
   failAnalysisJob,
   getEvidenceAsset,
   markAnalysisJobProcessing,
+  runAttributionForEvidence,
 } from "@/lib/evidence-store";
 import { runOcrWorker } from "@/lib/ocr-worker-client";
 import type { EvidenceActivityEvent } from "@/lib/evidence-types";
@@ -30,11 +31,17 @@ export async function POST(
     const ocrResult = await runOcrWorker(asset);
     const completed = await completeAnalysisJob(id, ocrResult);
     timeline.push(...completed.activity);
+    const attribution = await runAttributionForEvidence(
+      completed.evidence.evidenceId,
+      completed.evidence.ocrText ?? "",
+    );
+    timeline.push(...attribution.activity);
 
     return Response.json({
       message: "Analysis Complete",
       evidence: completed.evidence,
       job: completed.job,
+      attribution: attribution.attribution,
       activity: timeline,
     });
   } catch (error) {
