@@ -3,6 +3,11 @@
 import { motion } from "framer-motion";
 import { Crosshair, AlertOctagon, Activity, RadioTower } from "lucide-react";
 
+const riskBars = [
+  24, 48, 36, 72, 54, 28, 67, 81, 44, 59, 76, 38,
+  63, 88, 51, 34, 69, 57, 42, 79, 61, 46, 83, 55,
+];
+
 export default function ThreatIntelligence() {
   return (
     <div className="space-y-6">
@@ -47,12 +52,12 @@ export default function ThreatIntelligence() {
                 AI Risk Prediction Model
               </h3>
               <div className="flex-1 flex items-end gap-2">
-                 {[...Array(24)].map((_, i) => (
+                 {riskBars.map((height, i) => (
                     <motion.div 
                        key={i}
                        className="flex-1 bg-white/5 rounded-t-sm relative group overflow-hidden"
                        initial={{ height: 0 }}
-                       animate={{ height: `${Math.random() * 80 + 10}%` }}
+                       animate={{ height: `${height}%` }}
                        transition={{ duration: 1, delay: i * 0.05 }}
                     >
                        <div className="absolute inset-0 bg-gradient-to-t from-transparent to-brand/20 opacity-0 group-hover:opacity-100 transition-opacity" />

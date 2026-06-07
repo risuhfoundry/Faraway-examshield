@@ -32,9 +32,22 @@ Thumbs.db
 # TypeScript
 *.tsbuildinfo
 
+# Python
+__pycache__/
+*.py[cod]
+
 # Vercel
 .vercel
 
 # Generated seed data (regenerable via `npm run seed`)
 apps/core/data/*.json
 !apps/core/data/.gitkeep
+
+# Runtime evidence uploads
+apps/api/uploads/evidence/files/*
+!apps/api/uploads/evidence/files/.gitkeep
+apps/api/uploads/evidence/records/*
+!apps/api/uploads/evidence/records/.gitkeep
+apps/api/uploads/evidence/jobs/*
+!apps/api/uploads/evidence/jobs/.gitkeep
+apps/api/uploads/evidence/activity.json

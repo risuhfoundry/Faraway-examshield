@@ -1,13 +1,27 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
-import { Activity, ShieldAlert, Users, Server, AlertTriangle, Crosshair } from "lucide-react";
+import { Activity, ShieldAlert, Server, AlertTriangle, Crosshair, FileUp } from "lucide-react";
+import type { EvidenceListResponse } from "@/lib/evidence-types";
+import { formatEvidenceStatus, formatEvidenceTime } from "@/lib/evidence-format";
 
 const stats = [
   { label: "Active Exams", value: "142", trend: "+12", icon: Activity },
   { label: "Threat Level", value: "ELEVATED", trend: "Alert", icon: AlertTriangle },
   { label: "Security Score", value: "94.2%", trend: "-0.4%", icon: ShieldAlert },
   { label: "Active Centers", value: "1,204", trend: "+45", icon: Server },
+];
+
+const mapBlips = [
+  { left: "18%", top: "22%", delay: 0.2 },
+  { left: "72%", top: "18%", delay: 1.1 },
+  { left: "56%", top: "42%", delay: 0.7 },
+  { left: "24%", top: "68%", delay: 1.8 },
+  { left: "82%", top: "74%", delay: 2.4 },
+  { left: "38%", top: "84%", delay: 1.4 },
+  { left: "64%", top: "58%", delay: 0.4 },
+  { left: "12%", top: "48%", delay: 2.1 },
 ];
 
 const containerVariants = {
@@ -26,6 +40,31 @@ const itemVariants = {
 };
 
 export default function Dashboard() {
+  const [evidenceData, setEvidenceData] = useState<EvidenceListResponse | null>(null);
+
+  useEffect(() => {
+    let active = true;
+
+    async function loadEvidence() {
+      const response = await fetch("/evidence", { cache: "no-store" });
+      if (!response.ok) {
+        return;
+      }
+      const payload = (await response.json()) as EvidenceListResponse;
+      if (active) {
+        setEvidenceData(payload);
+      }
+    }
+
+    loadEvidence();
+    const interval = window.setInterval(loadEvidence, 3000);
+
+    return () => {
+      active = false;
+      window.clearInterval(interval);
+    };
+  }, []);
+
   return (
     <motion.div 
       variants={containerVariants}
@@ -86,16 +125,16 @@ export default function Dashboard() {
                  />
                  
                  {/* Blips */}
-                 {[...Array(8)].map((_, i) => (
+                 {mapBlips.map((blip, i) => (
                    <motion.div 
                      key={i}
                      initial={{ opacity: 0, scale: 0 }}
                      animate={{ opacity: [0, 1, 0], scale: [0, 1.5, 2] }}
-                     transition={{ duration: 3, repeat: Infinity, delay: Math.random() * 3 }}
+                     transition={{ duration: 3, repeat: Infinity, delay: blip.delay }}
                      className="absolute w-4 h-4 rounded-full border border-white/50 bg-white/10"
                      style={{
-                       left: `${Math.random() * 80 + 10}%`,
-                       top: `${Math.random() * 80 + 10}%`,
+                       left: blip.left,
+                       top: blip.top,
                      }}
                    />
                  ))}
@@ -114,24 +153,40 @@ export default function Dashboard() {
            </div>
         </motion.div>
 
-        {/* Active Investigations */}
+        {/* Activity Feed */}
         <motion.div variants={itemVariants} className="glass-panel h-[500px] flex flex-col">
           <div className="p-6 border-b border-white/10">
-             <h3 className="text-xs font-semibold uppercase tracking-[0.1em] text-white/50">Active Investigations</h3>
+             <h3 className="text-xs font-semibold uppercase tracking-[0.1em] text-white/50">Activity Feed</h3>
           </div>
           <div className="flex-1 overflow-y-auto p-4 space-y-4">
-            {[1, 2, 3, 4, 5].map((i) => (
-              <div key={i} className="p-4 bg-white/[0.02] border border-white/5 hover:border-white/20 transition-colors group cursor-pointer flex flex-col gap-3">
+            {evidenceData?.activity.map((event) => {
+              const evidence = evidenceData.evidence.find((item) => item.evidenceId === event.evidenceId);
+
+              return (
+              <div key={event.eventId} className="p-4 bg-white/[0.02] border border-white/5 hover:border-white/20 transition-colors group flex flex-col gap-3">
                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-mono text-white tracking-wider">INV-{4920 + i}</span>
-                    <span className="text-[10px] uppercase tracking-widest px-2 py-1 bg-white/10 text-white font-bold">Critical</span>
+                    <span className="text-xs font-mono text-white tracking-wider">{event.title}</span>
+                    <span className="text-[10px] uppercase tracking-widest px-2 py-1 bg-white/10 text-white font-bold">
+                      {formatEvidenceTime(event.timestamp)}
+                    </span>
                  </div>
-                 <span className="text-sm text-white/70 line-clamp-1 font-light">Suspicious network activity detected in Center {i * 12}</span>
-                 <div className="w-full bg-black border border-white/10 h-1 mt-2">
-                    <div className="bg-white h-full" style={{ width: `${60 + (i * 5)}%` }} />
+                 <span className="text-sm text-white/70 line-clamp-1 font-light">
+                   Evidence #{event.evidenceId}
+                 </span>
+                 <div className="flex items-center justify-between gap-3 text-xs text-white/45">
+                    <span className="truncate">{evidence?.filename ?? "Stored evidence"}</span>
+                    <span className="shrink-0">{evidence ? formatEvidenceStatus(evidence.status) : "Pending Analysis"}</span>
                  </div>
               </div>
-            ))}
+              );
+            })}
+
+            {(!evidenceData || evidenceData.activity.length === 0) && (
+              <div className="h-full flex flex-col items-center justify-center text-center text-white/40 gap-3 px-6">
+                <FileUp className="w-7 h-7 text-white/30" />
+                <p className="text-sm">Evidence uploads will appear here.</p>
+              </div>
+            )}
           </div>
         </motion.div>
       </div>

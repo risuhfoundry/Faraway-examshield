@@ -2,13 +2,13 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { motion } from "framer-motion";
 import { 
   ShieldAlert, 
   Activity, 
   Crosshair, 
   Map, 
   BellRing,
+  Files,
   Settings,
   LogOut,
   ChevronRight
@@ -17,6 +17,7 @@ import { cn } from "@/lib/utils";
 
 const NAV_ITEMS = [
   { name: "Command Center", href: "/dashboard", icon: Activity },
+  { name: "Evidence Center", href: "/dashboard/evidence", icon: Files },
   { name: "Threat Intelligence", href: "/dashboard/threats", icon: Crosshair },
   { name: "Investigation", href: "/dashboard/investigation", icon: Map },
   { name: "Exam Lifecycle", href: "/dashboard/lifecycle", icon: ShieldAlert },
