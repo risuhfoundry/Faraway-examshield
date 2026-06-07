@@ -4,7 +4,12 @@ import { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import { CheckCircle2, FileStack, Hourglass, Loader2, XCircle } from "lucide-react";
 import type { EvidenceListResponse } from "@/lib/evidence-types";
-import { formatEvidenceDateTime, formatEvidenceStatus, formatOcrStatus } from "@/lib/evidence-format";
+import {
+  formatEvidenceDateTime,
+  formatEvidenceSource,
+  formatEvidenceStatus,
+  formatOcrStatus,
+} from "@/lib/evidence-format";
 
 const emptyState: EvidenceListResponse = {
   evidence: [],
@@ -13,6 +18,8 @@ const emptyState: EvidenceListResponse = {
   attributions: [],
   watermarks: [],
   forensicReports: [],
+  telegramEvents: [],
+  alerts: [],
   stats: {
     totalEvidence: 0,
     pendingAnalysis: 0,
@@ -146,7 +153,7 @@ export default function EvidenceCenter() {
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs">
                 <div>
                   <div className="text-white/35 uppercase tracking-widest mb-1">Source</div>
-                  <div className="text-white/80">Manual Upload</div>
+                  <div className="text-white/80">{formatEvidenceSource(item.source)}</div>
                 </div>
                 <div>
                   <div className="text-white/35 uppercase tracking-widest mb-1">Risk</div>

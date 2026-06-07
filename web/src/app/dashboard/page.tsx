@@ -4,14 +4,11 @@ import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { Activity, ShieldAlert, Server, AlertTriangle, Crosshair, FileUp } from "lucide-react";
 import type { EvidenceListResponse } from "@/lib/evidence-types";
-import { formatEvidenceStatus, formatEvidenceTime } from "@/lib/evidence-format";
-
-const stats = [
-  { label: "Active Exams", value: "142", trend: "+12", icon: Activity },
-  { label: "Threat Level", value: "ELEVATED", trend: "Alert", icon: AlertTriangle },
-  { label: "Security Score", value: "94.2%", trend: "-0.4%", icon: ShieldAlert },
-  { label: "Active Centers", value: "1,204", trend: "+45", icon: Server },
-];
+import {
+  formatEvidenceSource,
+  formatEvidenceStatus,
+  formatEvidenceTime,
+} from "@/lib/evidence-format";
 
 const mapBlips = [
   { left: "18%", top: "22%", delay: 0.2 },
@@ -41,6 +38,19 @@ const itemVariants = {
 
 export default function Dashboard() {
   const [evidenceData, setEvidenceData] = useState<EvidenceListResponse | null>(null);
+  const criticalAlerts = evidenceData?.alerts.filter((alert) => alert.risk === "critical").length ?? 0;
+  const telegramEvents = evidenceData?.telegramEvents.length ?? 0;
+  const stats = [
+    { label: "Active Exams", value: "142", trend: "+12", icon: Activity },
+    {
+      label: "Critical Alerts",
+      value: String(criticalAlerts),
+      trend: criticalAlerts > 0 ? "Alert" : "Clear",
+      icon: AlertTriangle,
+    },
+    { label: "Telegram Events", value: String(telegramEvents), trend: "Live", icon: ShieldAlert },
+    { label: "Active Centers", value: "1,204", trend: "+45", icon: Server },
+  ];
 
   useEffect(() => {
     let active = true;
@@ -156,7 +166,7 @@ export default function Dashboard() {
         {/* Activity Feed */}
         <motion.div variants={itemVariants} className="glass-panel h-[500px] flex flex-col">
           <div className="p-6 border-b border-white/10">
-             <h3 className="text-xs font-semibold uppercase tracking-[0.1em] text-white/50">Activity Feed</h3>
+             <h3 className="text-xs font-semibold uppercase tracking-[0.1em] text-white/50">Live Monitoring Feed</h3>
           </div>
           <div className="flex-1 overflow-y-auto p-4 space-y-4">
             {evidenceData?.activity.map((event) => {
@@ -175,8 +185,16 @@ export default function Dashboard() {
                  </span>
                  <div className="flex items-center justify-between gap-3 text-xs text-white/45">
                     <span className="truncate">{evidence?.filename ?? "Stored evidence"}</span>
-                    <span className="shrink-0">{evidence ? formatEvidenceStatus(evidence.status) : "Pending Analysis"}</span>
+                    <span className="shrink-0">
+                      {evidence ? formatEvidenceSource(evidence.source) : "Monitoring"}
+                    </span>
                  </div>
+                 {evidence && (
+                   <div className="flex items-center justify-between gap-3 text-[10px] uppercase tracking-widest text-white/35">
+                     <span>{formatEvidenceStatus(evidence.status)}</span>
+                     {evidence.telegramMessageId && <span>MSG {evidence.telegramMessageId}</span>}
+                   </div>
+                 )}
               </div>
               );
             })}

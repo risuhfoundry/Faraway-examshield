@@ -56,4 +56,8 @@ apps/api/uploads/evidence/watermarks/*
 !apps/api/uploads/evidence/watermarks/.gitkeep
 apps/api/uploads/evidence/reports/*
 !apps/api/uploads/evidence/reports/.gitkeep
+apps/api/uploads/evidence/telegram-events/*
+!apps/api/uploads/evidence/telegram-events/.gitkeep
+apps/api/uploads/evidence/alerts/*
+!apps/api/uploads/evidence/alerts/.gitkeep
 apps/api/uploads/evidence/activity.json

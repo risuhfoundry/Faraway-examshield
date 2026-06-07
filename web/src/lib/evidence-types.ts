@@ -6,6 +6,7 @@ export type EvidenceStatus =
   | "investigating"
   | "resolved";
 export type EvidenceRiskLevel = "unknown";
+export type EvidenceSource = "manual-upload" | "telegram";
 export type OcrStatus = "not-started" | "queued" | "processing" | "completed" | "failed";
 export type AnalysisJobStatus = "queued" | "processing" | "completed" | "failed";
 export type WatermarkStatus = "not-detected" | "detected" | "invalid";
@@ -21,16 +22,31 @@ export type EvidenceRecord = {
   evidenceId: string;
   filename: string;
   fileType: string;
-  source: "manual-upload";
+  source: EvidenceSource;
   uploadedAt: string;
   status: EvidenceStatus;
   riskLevel: EvidenceRiskLevel;
+  telegramMessageId: string | null;
+  telegramChatId: string | null;
+  telegramTimestamp: string | null;
   ocrStatus: OcrStatus;
   ocrText: string | null;
   ocrConfidence: number | null;
   ocrProcessingTimeMs: number | null;
   analysisStartedAt: string | null;
   analysisCompletedAt: string | null;
+};
+
+export type TelegramEvent = {
+  eventId: string;
+  messageId: string;
+  chatId: string;
+  timestamp: string;
+  evidenceId: string | null;
+  text: string | null;
+  filename: string | null;
+  fileType: string | null;
+  receivedAt: string;
 };
 
 export type AnalysisJob = {
@@ -90,11 +106,27 @@ export type ForensicReport = {
   timestamp: string;
 };
 
+export type AlertRecord = {
+  alertId: string;
+  evidenceId: string;
+  paperId: string | null;
+  centerCode: string | null;
+  watermarkId: string | null;
+  confidence: number;
+  risk: string;
+  createdAt: string;
+  status: "open";
+};
+
 export type EvidenceActivityEvent = {
   eventId: string;
   type:
     | "evidence-uploaded"
+    | "telegram-message-detected"
+    | "evidence-created"
     | "analysis-queued"
+    | "analysis-started"
+    | "analysis-completed"
     | "ocr-started"
     | "ocr-complete"
     | "watermark-extraction-started"
@@ -104,12 +136,17 @@ export type EvidenceActivityEvent = {
     | "source-identified"
     | "attribution-complete"
     | "investigation-completed"
+    | "critical-alert-generated"
     | "analysis-failed"
     | "results-stored";
   title:
     | "Upload Received"
     | "Evidence Uploaded"
+    | "Telegram Message Detected"
+    | "Evidence Created"
     | "Analysis Queued"
+    | "Analysis Started"
+    | "Analysis Completed"
     | "OCR Started"
     | "OCR Complete"
     | "Watermark Extraction Started"
@@ -119,6 +156,7 @@ export type EvidenceActivityEvent = {
     | "Source Identified"
     | "Attribution Complete"
     | "Investigation Completed"
+    | "Critical Alert Generated"
     | "Analysis Failed"
     | "Results Stored";
   evidenceId: string;
@@ -134,6 +172,8 @@ export type EvidenceListResponse = {
   attributions: AttributionRecord[];
   watermarks: WatermarkExtractionRecord[];
   forensicReports: ForensicReport[];
+  telegramEvents: TelegramEvent[];
+  alerts: AlertRecord[];
   stats: {
     totalEvidence: number;
     pendingAnalysis: number;
@@ -156,5 +196,6 @@ export type AnalysisJobResponse = {
   attribution?: AttributionRecord | null;
   watermark?: WatermarkExtractionRecord | null;
   forensicReport?: ForensicReport | null;
+  alert?: AlertRecord | null;
   activity: EvidenceActivityEvent[];
 };

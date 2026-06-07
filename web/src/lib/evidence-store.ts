@@ -2,12 +2,15 @@ import { randomUUID } from "crypto";
 import { mkdir, readdir, readFile, writeFile } from "fs/promises";
 import path from "path";
 import type {
+  AlertRecord,
   AnalysisJob,
   AttributionRecord,
   EvidenceActivityEvent,
   EvidenceListResponse,
   EvidenceRecord,
+  EvidenceSource,
   ForensicReport,
+  TelegramEvent,
   WatermarkExtractionRecord,
 } from "./evidence-types";
 import { matchPaperFromOcr } from "./paper-matcher";
@@ -20,6 +23,8 @@ const JOBS_DIR = path.join(UPLOAD_ROOT, "jobs");
 const ATTRIBUTIONS_DIR = path.join(UPLOAD_ROOT, "attributions");
 const WATERMARKS_DIR = path.join(UPLOAD_ROOT, "watermarks");
 const REPORTS_DIR = path.join(UPLOAD_ROOT, "reports");
+const TELEGRAM_EVENTS_DIR = path.join(UPLOAD_ROOT, "telegram-events");
+const ALERTS_DIR = path.join(UPLOAD_ROOT, "alerts");
 const ACTIVITY_FILE = path.join(UPLOAD_ROOT, "activity.json");
 
 const ALLOWED_TYPES = new Set(["image/jpeg", "image/png", "application/pdf"]);
@@ -32,6 +37,24 @@ type StoredEvidenceRecord = EvidenceRecord & {
   storedAt: string;
 };
 
+type EvidenceCreationOptions = {
+  source?: EvidenceSource;
+  telegram?: {
+    messageId: string;
+    chatId: string;
+    timestamp: string;
+    text?: string | null;
+  };
+};
+
+type TelegramEventInput = {
+  messageId: string;
+  chatId: string;
+  timestamp: string;
+  text?: string | null;
+  file?: File | null;
+};
+
 export async function ensureEvidenceStorage() {
   await mkdir(FILES_DIR, { recursive: true });
   await mkdir(RECORDS_DIR, { recursive: true });
@@ -39,6 +62,8 @@ export async function ensureEvidenceStorage() {
   await mkdir(ATTRIBUTIONS_DIR, { recursive: true });
   await mkdir(WATERMARKS_DIR, { recursive: true });
   await mkdir(REPORTS_DIR, { recursive: true });
+  await mkdir(TELEGRAM_EVENTS_DIR, { recursive: true });
+  await mkdir(ALERTS_DIR, { recursive: true });
 }
 
 export function validateEvidenceFile(file: File) {
@@ -48,7 +73,7 @@ export function validateEvidenceFile(file: File) {
   }
 }
 
-export async function createEvidence(file: File): Promise<{
+export async function createEvidence(file: File, options: EvidenceCreationOptions = {}): Promise<{
   evidence: EvidenceRecord;
   activity: EvidenceActivityEvent;
 }> {
@@ -60,6 +85,7 @@ export async function createEvidence(file: File): Promise<{
   const extension = path.extname(file.name).toLowerCase();
   const storedFilename = `${storageId}${extension}`;
   const uploadedAt = new Date().toISOString();
+  const source = options.source ?? "manual-upload";
 
   const bytes = Buffer.from(await file.arrayBuffer());
   await writeFile(path.join(FILES_DIR, storedFilename), bytes);
@@ -68,10 +94,13 @@ export async function createEvidence(file: File): Promise<{
     evidenceId,
     filename: file.name,
     fileType: file.type,
-    source: "manual-upload",
+    source,
     uploadedAt,
     status: "pending-analysis",
     riskLevel: "unknown",
+    telegramMessageId: options.telegram?.messageId ?? null,
+    telegramChatId: options.telegram?.chatId ?? null,
+    telegramTimestamp: options.telegram?.timestamp ?? null,
     ocrStatus: "not-started",
     ocrText: null,
     ocrConfidence: null,
@@ -97,10 +126,10 @@ export async function createEvidence(file: File): Promise<{
   const activity: EvidenceActivityEvent = {
     eventId: randomUUID(),
     type: "evidence-uploaded",
-    title: "Upload Received",
+    title: source === "telegram" ? "Evidence Created" : "Upload Received",
     evidenceId,
     timestamp: uploadedAt,
-    detail: file.name,
+    detail: source === "telegram" ? `Telegram evidence: ${file.name}` : file.name,
   };
 
   await appendActivity(activity);
@@ -118,6 +147,8 @@ export async function listEvidence(): Promise<EvidenceListResponse> {
   const attributions = await readAttributions();
   const watermarks = await readWatermarks();
   const forensicReports = await readForensicReports();
+  const telegramEvents = await readTelegramEvents();
+  const alerts = await readAlerts();
 
   return {
     evidence,
@@ -126,6 +157,8 @@ export async function listEvidence(): Promise<EvidenceListResponse> {
     attributions,
     watermarks,
     forensicReports,
+    telegramEvents,
+    alerts,
     stats: {
       totalEvidence: evidence.length,
       pendingAnalysis: evidence.filter((item) => item.status === "pending-analysis").length,
@@ -159,6 +192,9 @@ export async function getEvidenceBundle(evidenceId: string) {
   const watermark = watermarks[0] ?? null;
   const forensicReports = (await readForensicReports()).filter((report) => report.evidenceId === evidenceId);
   const forensicReport = forensicReports[0] ?? null;
+  const telegramEvents = (await readTelegramEvents()).filter((event) => event.evidenceId === evidenceId);
+  const alerts = (await readAlerts()).filter((alert) => alert.evidenceId === evidenceId);
+  const alert = alerts[0] ?? null;
 
   return {
     evidence,
@@ -170,6 +206,9 @@ export async function getEvidenceBundle(evidenceId: string) {
     watermarks,
     forensicReport,
     forensicReports,
+    telegramEvents,
+    alert,
+    alerts,
   };
 }
 
@@ -323,6 +362,116 @@ export async function completeAnalysisJob(
   await appendActivity(storedEvent);
 
   return { evidence, job: updatedJob, activity: [completedEvent, storedEvent] };
+}
+
+export async function createTelegramEvidenceEvent(input: TelegramEventInput) {
+  await ensureEvidenceStorage();
+  const existing = await findTelegramEvent(input.chatId, input.messageId);
+
+  if (existing) {
+    return {
+      telegramEvent: existing,
+      evidence: existing.evidenceId ? await getEvidenceById(existing.evidenceId) : null,
+      activity: [] as EvidenceActivityEvent[],
+      duplicate: true,
+    };
+  }
+
+  if (!input.file) {
+    const telegramEvent = await writeTelegramEvent({
+      eventId: getTelegramEventId(input.chatId, input.messageId),
+      messageId: input.messageId,
+      chatId: input.chatId,
+      timestamp: input.timestamp,
+      evidenceId: null,
+      text: input.text ?? null,
+      filename: null,
+      fileType: null,
+      receivedAt: new Date().toISOString(),
+    });
+
+    return {
+      telegramEvent,
+      evidence: null,
+      activity: [] as EvidenceActivityEvent[],
+      duplicate: false,
+    };
+  }
+
+  const created = await createEvidence(input.file, {
+    source: "telegram",
+    telegram: {
+      messageId: input.messageId,
+      chatId: input.chatId,
+      timestamp: input.timestamp,
+      text: input.text ?? null,
+    },
+  });
+
+  const detectedEvent = await recordEvidenceActivity({
+    type: "telegram-message-detected",
+    title: "Telegram Message Detected",
+    evidenceId: created.evidence.evidenceId,
+    timestamp: input.timestamp,
+    detail: input.text?.trim() || `Message ${input.messageId} from ${input.chatId}`,
+  });
+
+  const telegramEvent = await writeTelegramEvent({
+    eventId: getTelegramEventId(input.chatId, input.messageId),
+    messageId: input.messageId,
+    chatId: input.chatId,
+    timestamp: input.timestamp,
+    evidenceId: created.evidence.evidenceId,
+    text: input.text ?? null,
+    filename: input.file.name,
+    fileType: input.file.type,
+    receivedAt: created.evidence.uploadedAt,
+  });
+
+  return {
+    telegramEvent,
+    evidence: created.evidence,
+    activity: [detectedEvent, created.activity],
+    duplicate: false,
+  };
+}
+
+export async function createCriticalAlertIfNeeded(
+  report: ForensicReport | null,
+  attribution: AttributionRecord | null,
+) {
+  if (!report || report.status !== "investigation-complete" || report.finalConfidence <= 80) {
+    return { alert: null, activity: null };
+  }
+
+  const existing = await findAlertByEvidenceId(report.evidenceId);
+  if (existing) {
+    return { alert: existing, activity: null };
+  }
+
+  const createdAt = addMilliseconds(report.timestamp, 5);
+  const alert: AlertRecord = {
+    alertId: getAlertId(report.evidenceId),
+    evidenceId: report.evidenceId,
+    paperId: report.paperIdentified,
+    centerCode: report.centerCode,
+    watermarkId: report.watermarkId ?? attribution?.matchedWatermarkId ?? null,
+    confidence: report.finalConfidence,
+    risk: (report.riskLevel ?? "critical").toLowerCase(),
+    createdAt,
+    status: "open",
+  };
+
+  await writeAlert(alert);
+  const activity = await recordEvidenceActivity({
+    type: "critical-alert-generated",
+    title: "Critical Alert Generated",
+    evidenceId: report.evidenceId,
+    timestamp: createdAt,
+    detail: `${alert.paperId ?? "Unknown paper"} / ${alert.centerCode ?? "Unknown center"} / ${alert.confidence}%`,
+  });
+
+  return { alert, activity };
 }
 
 export async function runAttributionForEvidence(
@@ -696,6 +845,58 @@ async function readForensicReports(): Promise<ForensicReport[]> {
   return reports.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
 }
 
+async function readTelegramEvents(): Promise<TelegramEvent[]> {
+  await ensureEvidenceStorage();
+
+  const entries = await readdir(TELEGRAM_EVENTS_DIR, { withFileTypes: true });
+  const events = await Promise.all(
+    entries
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+      .map(async (entry) => {
+        const raw = await readFile(path.join(TELEGRAM_EVENTS_DIR, entry.name), "utf8");
+        return JSON.parse(raw) as TelegramEvent;
+      }),
+  );
+
+  return events.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+}
+
+async function readAlerts(): Promise<AlertRecord[]> {
+  await ensureEvidenceStorage();
+
+  const entries = await readdir(ALERTS_DIR, { withFileTypes: true });
+  const alerts = await Promise.all(
+    entries
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+      .map(async (entry) => {
+        const raw = await readFile(path.join(ALERTS_DIR, entry.name), "utf8");
+        return JSON.parse(raw) as AlertRecord;
+      }),
+  );
+
+  return alerts.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+}
+
+export async function listAlerts() {
+  return readAlerts();
+}
+
+async function findTelegramEvent(chatId: string, messageId: string) {
+  const normalizedChatId = String(chatId);
+  const normalizedMessageId = String(messageId);
+  const events = await readTelegramEvents();
+  return (
+    events.find(
+      (event) => event.chatId === normalizedChatId && event.messageId === normalizedMessageId,
+    ) ?? null
+  );
+}
+
+async function findAlertByEvidenceId(evidenceId: string) {
+  const alerts = await readAlerts();
+  return alerts.find((alert) => alert.evidenceId === evidenceId) ?? null;
+}
+
 async function getAnalysisJob(jobId: string): Promise<AnalysisJob | null> {
   await ensureEvidenceStorage();
 
@@ -740,6 +941,26 @@ async function writeForensicReport(report: ForensicReport) {
   return report;
 }
 
+async function writeTelegramEvent(event: TelegramEvent) {
+  await ensureEvidenceStorage();
+  await writeFile(
+    path.join(TELEGRAM_EVENTS_DIR, `${event.eventId}.json`),
+    JSON.stringify(event, null, 2),
+    "utf8",
+  );
+  return event;
+}
+
+async function writeAlert(alert: AlertRecord) {
+  await ensureEvidenceStorage();
+  await writeFile(
+    path.join(ALERTS_DIR, `${alert.evidenceId}.json`),
+    JSON.stringify(alert, null, 2),
+    "utf8",
+  );
+  return alert;
+}
+
 async function readActivity(): Promise<EvidenceActivityEvent[]> {
   await ensureEvidenceStorage();
 
@@ -753,11 +974,23 @@ async function readActivity(): Promise<EvidenceActivityEvent[]> {
   }
 }
 
+export async function recordEvidenceActivity(
+  activity: Omit<EvidenceActivityEvent, "eventId"> & { eventId?: string },
+) {
+  const event: EvidenceActivityEvent = {
+    ...activity,
+    eventId: activity.eventId ?? randomUUID(),
+  };
+
+  await appendActivity(event);
+  return event;
+}
+
 async function appendActivity(activity: EvidenceActivityEvent) {
   const existing = await readActivity();
   await writeFile(
     ACTIVITY_FILE,
-    JSON.stringify([activity, ...existing].slice(0, 50), null, 2),
+    JSON.stringify([activity, ...existing].slice(0, 200), null, 2),
     "utf8",
   );
 }
@@ -773,6 +1006,9 @@ function toEvidenceRecord(record: StoredEvidenceRecord): EvidenceRecord {
     uploadedAt: normalized.uploadedAt,
     status: normalized.status,
     riskLevel: normalized.riskLevel,
+    telegramMessageId: normalized.telegramMessageId,
+    telegramChatId: normalized.telegramChatId,
+    telegramTimestamp: normalized.telegramTimestamp,
     ocrStatus: normalized.ocrStatus,
     ocrText: normalized.ocrText,
     ocrConfidence: normalized.ocrConfidence,
@@ -785,6 +1021,10 @@ function toEvidenceRecord(record: StoredEvidenceRecord): EvidenceRecord {
 function normalizeStoredRecord(record: StoredEvidenceRecord): StoredEvidenceRecord {
   return {
     ...record,
+    source: record.source ?? "manual-upload",
+    telegramMessageId: record.telegramMessageId ?? null,
+    telegramChatId: record.telegramChatId ?? null,
+    telegramTimestamp: record.telegramTimestamp ?? null,
     ocrStatus: record.ocrStatus ?? "not-started",
     ocrText: record.ocrText ?? null,
     ocrConfidence: record.ocrConfidence ?? null,
@@ -807,6 +1047,17 @@ function getWatermarkExtractionId(evidenceId: string) {
 function getReportId(evidenceId: string) {
   const suffix = evidenceId.replace(/^EV-/, "");
   return `FR-${suffix}`;
+}
+
+function getAlertId(evidenceId: string) {
+  const suffix = evidenceId.replace(/^EV-/, "");
+  return `ALERT-${suffix}`;
+}
+
+function getTelegramEventId(chatId: string, messageId: string) {
+  const normalizedChat = String(chatId).replace(/[^a-z0-9-]/gi, "_");
+  const normalizedMessage = String(messageId).replace(/[^a-z0-9-]/gi, "_");
+  return `TG-${normalizedChat}-${normalizedMessage}`;
 }
 
 function addMilliseconds(timestamp: string, milliseconds: number) {

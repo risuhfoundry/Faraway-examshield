@@ -29,6 +29,7 @@ import type {
 } from "@/lib/evidence-types";
 import {
   formatEvidenceDateTime,
+  formatEvidenceSource,
   formatEvidenceStatus,
   formatEvidenceTime,
   formatOcrStatus,
@@ -439,7 +440,13 @@ function VisualAnalysisPanel({
             </span>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-5 text-sm">
-            <InfoBlock label="Source" value="Manual Upload" />
+            <InfoBlock label="Source" value={formatEvidenceSource(evidence.source)} />
+            {evidence.source === "telegram" && (
+              <>
+                <InfoBlock label="Message" value={evidence.telegramMessageId ?? "Unknown"} />
+                <InfoBlock label="Channel" value={evidence.telegramChatId ?? "Unknown"} />
+              </>
+            )}
             <InfoBlock label="OCR" value={formatOcrStatus(evidence.ocrStatus)} />
             <InfoBlock label="Uploaded" value={formatEvidenceDateTime(evidence.uploadedAt)} />
             <InfoBlock

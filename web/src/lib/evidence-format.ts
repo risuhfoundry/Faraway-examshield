@@ -1,4 +1,9 @@
-import type { AnalysisJobStatus, EvidenceStatus, OcrStatus } from "./evidence-types";
+import type {
+  AnalysisJobStatus,
+  EvidenceSource,
+  EvidenceStatus,
+  OcrStatus,
+} from "./evidence-types";
 
 export function formatEvidenceStatus(status: EvidenceStatus) {
   const labels: Record<EvidenceStatus, string> = {
@@ -34,6 +39,15 @@ export function formatAnalysisJobStatus(status: AnalysisJobStatus) {
   };
 
   return labels[status];
+}
+
+export function formatEvidenceSource(source: EvidenceSource) {
+  const labels: Record<EvidenceSource, string> = {
+    "manual-upload": "Manual Upload",
+    telegram: "Telegram",
+  };
+
+  return labels[source];
 }
 
 export function formatEvidenceTime(value: string) {
