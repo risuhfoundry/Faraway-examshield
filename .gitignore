@@ -52,4 +52,8 @@ apps/api/uploads/evidence/jobs/*
 !apps/api/uploads/evidence/jobs/.gitkeep
 apps/api/uploads/evidence/attributions/*
 !apps/api/uploads/evidence/attributions/.gitkeep
+apps/api/uploads/evidence/watermarks/*
+!apps/api/uploads/evidence/watermarks/.gitkeep
+apps/api/uploads/evidence/reports/*
+!apps/api/uploads/evidence/reports/.gitkeep
 apps/api/uploads/evidence/activity.json

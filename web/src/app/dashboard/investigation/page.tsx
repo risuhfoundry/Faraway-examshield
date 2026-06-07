@@ -24,6 +24,8 @@ import type {
   EvidenceListResponse,
   EvidenceRecord,
   EvidenceUploadResponse,
+  ForensicReport,
+  WatermarkExtractionRecord,
 } from "@/lib/evidence-types";
 import {
   formatEvidenceDateTime,
@@ -95,6 +97,28 @@ export default function InvestigationWorkspace() {
 
     return (
       evidenceData.attributions.find((report) => report.evidenceId === selectedEvidence.evidenceId) ??
+      null
+    );
+  }, [evidenceData, selectedEvidence]);
+
+  const selectedWatermark = useMemo(() => {
+    if (!evidenceData || !selectedEvidence) {
+      return null;
+    }
+
+    return (
+      evidenceData.watermarks.find((watermark) => watermark.evidenceId === selectedEvidence.evidenceId) ??
+      null
+    );
+  }, [evidenceData, selectedEvidence]);
+
+  const selectedForensicReport = useMemo(() => {
+    if (!evidenceData || !selectedEvidence) {
+      return null;
+    }
+
+    return (
+      evidenceData.forensicReports.find((report) => report.evidenceId === selectedEvidence.evidenceId) ??
       null
     );
   }, [evidenceData, selectedEvidence]);
@@ -233,6 +257,8 @@ export default function InvestigationWorkspace() {
               <AttributionPanel
                 evidence={selectedEvidence}
                 attribution={selectedAttribution}
+                watermark={selectedWatermark}
+                forensicReport={selectedForensicReport}
                 analyzing={analyzingId === selectedEvidence?.evidenceId}
               />
             )}
@@ -560,10 +586,14 @@ function TimelinePanel({
 function AttributionPanel({
   evidence,
   attribution,
+  watermark,
+  forensicReport,
   analyzing,
 }: {
   evidence: EvidenceRecord | null;
   attribution: AttributionRecord | null;
+  watermark: WatermarkExtractionRecord | null;
+  forensicReport: ForensicReport | null;
   analyzing: boolean;
 }) {
   if (!evidence) {
@@ -593,9 +623,30 @@ function AttributionPanel({
         <p className="text-sm text-white/50 mt-4 max-w-xl">
           OCR completed, but the extracted text did not confidently match a registered paper.
         </p>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mt-8">
+          <InfoMetric
+            label="Watermark"
+            value={watermark?.watermarkId ?? formatWatermarkStatus(watermark)}
+          />
+          <InfoMetric
+            label="Watermark Confidence"
+            value={formatNullablePercent(watermark?.confidence ?? null)}
+          />
+          <InfoMetric
+            label="Final"
+            value={formatNullablePercent(forensicReport?.finalConfidence ?? attribution.finalConfidence)}
+          />
+        </div>
       </div>
     );
   }
+
+  const reportStatus = forensicReport?.status === "investigation-complete"
+    ? "Investigation Complete"
+    : "Match Found";
+  const riskLabel = forensicReport?.riskLevel ?? attribution.status;
+  const watermarkId = watermark?.watermarkId ?? forensicReport?.watermarkId ?? attribution.matchedWatermarkId;
+  const finalConfidence = forensicReport?.finalConfidence ?? attribution.finalConfidence;
 
   return (
     <div className="h-full min-h-[500px] border border-white/10 bg-black p-6">
@@ -603,15 +654,55 @@ function AttributionPanel({
         <div>
           <div className="text-xs uppercase tracking-[0.2em] text-white/45">Attribution Report</div>
           <div className="text-4xl font-heading uppercase tracking-widest text-white mt-4">
-            Match Found
+            {reportStatus}
           </div>
         </div>
         <div className="bg-white text-black px-4 py-2 text-xs font-bold uppercase tracking-widest">
-          {attribution.status}
+          {formatRiskLabel(riskLabel)}
         </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-5 mt-6">
+        <div className="border border-white/10 bg-white/[0.02] p-6">
+          <div className="flex items-center gap-3 text-white/55 mb-6">
+            <Fingerprint className="w-5 h-5" />
+            <span className="text-xs uppercase tracking-[0.2em]">Watermark Panel</span>
+          </div>
+          <div className="text-3xl font-heading uppercase tracking-widest text-white break-all">
+            {watermarkId ?? "Not Detected"}
+          </div>
+          <div className="text-xs uppercase tracking-widest text-white/45 mt-3">
+            {formatWatermarkStatus(watermark)}
+          </div>
+        </div>
+
+        <div className="border border-white/10 bg-white/[0.02] p-6">
+          <div className="flex items-center gap-3 text-white/55 mb-6">
+            <MapPinned className="w-5 h-5" />
+            <span className="text-xs uppercase tracking-[0.2em]">Attribution Panel</span>
+          </div>
+          <div className="grid grid-cols-1 gap-4">
+            <InfoBlock label="Center" value={attribution.centerCode ?? "Unknown"} />
+            <InfoBlock label="Printer" value={attribution.printerId ?? "Unknown"} />
+            <InfoBlock label="Batch" value={attribution.batchId ?? "Unknown"} />
+          </div>
+        </div>
+
+        <div className="border border-white bg-white text-black p-6">
+          <div className="text-xs uppercase tracking-[0.2em] text-black/50">Confidence Panel</div>
+          <div className="text-5xl font-heading mt-4">{finalConfidence}%</div>
+          <div className="space-y-3 mt-6 text-xs">
+            <ConfidenceRow label="OCR" value={formatNullablePercent(attribution.ocrConfidence)} />
+            <ConfidenceRow
+              label="Watermark"
+              value={formatNullablePercent(attribution.watermarkConfidence)}
+            />
+            <ConfidenceRow label="Final" value={`${finalConfidence}%`} />
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-5 mt-5">
         <div className="lg:col-span-2 border border-white/10 bg-white/[0.02] p-6">
           <div className="flex items-center gap-3 text-white/55 mb-6">
             <ShieldCheck className="w-5 h-5" />
@@ -625,11 +716,20 @@ function AttributionPanel({
           </div>
         </div>
 
-        <div className="border border-white/10 bg-white text-black p-6">
-          <div className="text-xs uppercase tracking-[0.2em] text-black/50">Match</div>
-          <div className="text-5xl font-heading mt-4">{attribution.confidence}%</div>
-          <div className="text-xs uppercase tracking-widest text-black/60 mt-2">
-            Registry Confidence
+        <div className="border border-white/10 bg-white/[0.02] p-6">
+          <div className="text-white/35 uppercase tracking-widest text-[10px] mb-4">
+            Forensic Report
+          </div>
+          <div className="grid grid-cols-1 gap-4">
+            <InfoBlock label="Report" value={forensicReport?.reportId ?? "Pending"} />
+            <InfoBlock
+              label="Risk"
+              value={formatRiskLabel(forensicReport?.riskLevel ?? attribution.status)}
+            />
+            <InfoBlock
+              label="Timestamp"
+              value={forensicReport ? formatEvidenceDateTime(forensicReport.timestamp) : "Pending"}
+            />
           </div>
         </div>
       </div>
@@ -643,7 +743,7 @@ function AttributionPanel({
           <InfoBlock label="Center" value={attribution.centerCode ?? "Unknown"} />
           <InfoBlock label="Printer" value={attribution.printerId ?? "Unknown"} />
           <InfoBlock label="Batch" value={attribution.batchId ?? "Unknown"} />
-          <InfoBlock label="Watermark" value={attribution.matchedWatermarkId ?? "Unknown"} />
+          <InfoBlock label="Watermark" value={watermarkId ?? "Unknown"} />
         </div>
         {attribution.centerName && (
           <div className="mt-5 pt-5 border-t border-white/10 text-sm text-white/65">
@@ -739,6 +839,43 @@ function InfoMetric({ label, value }: { label: string; value: string }) {
       <div className="text-lg font-heading uppercase tracking-widest text-white">{value}</div>
     </div>
   );
+}
+
+function ConfidenceRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-center justify-between gap-4 border-t border-black/10 pt-3 first:border-t-0 first:pt-0">
+      <span className="uppercase tracking-widest text-black/50">{label}</span>
+      <span className="font-mono font-bold">{value}</span>
+    </div>
+  );
+}
+
+function formatNullablePercent(value: number | null | undefined) {
+  return value === null || value === undefined ? "Pending" : `${value}%`;
+}
+
+function formatWatermarkStatus(watermark: WatermarkExtractionRecord | null) {
+  if (!watermark) {
+    return "Pending";
+  }
+
+  if (watermark.status === "detected") {
+    return "Detected";
+  }
+
+  if (watermark.status === "invalid") {
+    return "Invalid";
+  }
+
+  return "Not Detected";
+}
+
+function formatRiskLabel(value: string | null | undefined) {
+  if (!value) {
+    return "Unknown";
+  }
+
+  return value.replace(/-/g, " ").replace(/_/g, " ").toUpperCase();
 }
 
 function EmptyPanel({ icon: Icon, text }: { icon: LucideIcon; text: string }) {

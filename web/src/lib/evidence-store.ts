@@ -7,14 +7,19 @@ import type {
   EvidenceActivityEvent,
   EvidenceListResponse,
   EvidenceRecord,
+  ForensicReport,
+  WatermarkExtractionRecord,
 } from "./evidence-types";
 import { matchPaperFromOcr } from "./paper-matcher";
+import { extractWatermarkFromText } from "./watermark-extractor";
 
 const UPLOAD_ROOT = path.resolve(process.cwd(), "..", "apps", "api", "uploads", "evidence");
 const FILES_DIR = path.join(UPLOAD_ROOT, "files");
 const RECORDS_DIR = path.join(UPLOAD_ROOT, "records");
 const JOBS_DIR = path.join(UPLOAD_ROOT, "jobs");
 const ATTRIBUTIONS_DIR = path.join(UPLOAD_ROOT, "attributions");
+const WATERMARKS_DIR = path.join(UPLOAD_ROOT, "watermarks");
+const REPORTS_DIR = path.join(UPLOAD_ROOT, "reports");
 const ACTIVITY_FILE = path.join(UPLOAD_ROOT, "activity.json");
 
 const ALLOWED_TYPES = new Set(["image/jpeg", "image/png", "application/pdf"]);
@@ -32,6 +37,8 @@ export async function ensureEvidenceStorage() {
   await mkdir(RECORDS_DIR, { recursive: true });
   await mkdir(JOBS_DIR, { recursive: true });
   await mkdir(ATTRIBUTIONS_DIR, { recursive: true });
+  await mkdir(WATERMARKS_DIR, { recursive: true });
+  await mkdir(REPORTS_DIR, { recursive: true });
 }
 
 export function validateEvidenceFile(file: File) {
@@ -109,12 +116,16 @@ export async function listEvidence(): Promise<EvidenceListResponse> {
   const activity = await readActivity();
   const jobs = await readAnalysisJobs();
   const attributions = await readAttributions();
+  const watermarks = await readWatermarks();
+  const forensicReports = await readForensicReports();
 
   return {
     evidence,
     activity,
     jobs,
     attributions,
+    watermarks,
+    forensicReports,
     stats: {
       totalEvidence: evidence.length,
       pendingAnalysis: evidence.filter((item) => item.status === "pending-analysis").length,
@@ -144,8 +155,22 @@ export async function getEvidenceBundle(evidenceId: string) {
     (attribution) => attribution.evidenceId === evidenceId,
   );
   const attribution = attributions[0] ?? null;
+  const watermarks = (await readWatermarks()).filter((watermark) => watermark.evidenceId === evidenceId);
+  const watermark = watermarks[0] ?? null;
+  const forensicReports = (await readForensicReports()).filter((report) => report.evidenceId === evidenceId);
+  const forensicReport = forensicReports[0] ?? null;
 
-  return { evidence, activity, jobs, attribution, attributions };
+  return {
+    evidence,
+    activity,
+    jobs,
+    attribution,
+    attributions,
+    watermark,
+    watermarks,
+    forensicReport,
+    forensicReports,
+  };
 }
 
 export async function getEvidenceAsset(evidenceId: string) {
@@ -291,7 +316,7 @@ export async function completeAnalysisJob(
     title: "Results Stored",
     evidenceId: job.evidenceId,
     jobId,
-    timestamp: now,
+    timestamp: addMilliseconds(now, 1),
   };
 
   await appendActivity(completedEvent);
@@ -300,20 +325,77 @@ export async function completeAnalysisJob(
   return { evidence, job: updatedJob, activity: [completedEvent, storedEvent] };
 }
 
-export async function runAttributionForEvidence(evidenceId: string, ocrText: string) {
+export async function runAttributionForEvidence(
+  evidenceId: string,
+  ocrText: string,
+  ocrConfidence: number | null,
+) {
   const now = new Date().toISOString();
+  const watermarkExtractedAt = addMilliseconds(now, 1);
+  const attributionStartedAt = addMilliseconds(now, 2);
+  const attributionCreatedAt = addMilliseconds(now, 3);
+  const watermarkStartedEvent: EvidenceActivityEvent = {
+    eventId: randomUUID(),
+    type: "watermark-extraction-started",
+    title: "Watermark Extraction Started",
+    evidenceId,
+    timestamp: now,
+  };
+  await appendActivity(watermarkStartedEvent);
+
+  const watermarkResult = extractWatermarkFromText(ocrText);
+  const watermark: WatermarkExtractionRecord = {
+    extractionId: getWatermarkExtractionId(evidenceId),
+    evidenceId,
+    watermarkId: watermarkResult.watermarkId,
+    confidence: watermarkResult.confidence,
+    status: watermarkResult.status,
+    extractedAt: watermarkExtractedAt,
+  };
+  await writeWatermark(watermark);
+
+  const watermarkActivity: EvidenceActivityEvent[] = [watermarkStartedEvent];
+  if (watermark.status === "detected" && watermark.watermarkId) {
+    const watermarkFoundEvent: EvidenceActivityEvent = {
+      eventId: randomUUID(),
+      type: "watermark-found",
+      title: "Watermark Found",
+      evidenceId,
+      timestamp: watermark.extractedAt,
+      detail: `${watermark.watermarkId} at ${watermark.confidence}% confidence`,
+    };
+    await appendActivity(watermarkFoundEvent);
+    watermarkActivity.push(watermarkFoundEvent);
+  }
+
   const startedEvent: EvidenceActivityEvent = {
     eventId: randomUUID(),
     type: "attribution-started",
     title: "Attribution Started",
     evidenceId,
-    timestamp: now,
+    timestamp: attributionStartedAt,
   };
   await appendActivity(startedEvent);
 
-  const match = matchPaperFromOcr(ocrText);
+  const paperMatch = matchPaperFromOcr(ocrText);
+  const registryRecord = watermarkResult.status === "detected" ? watermarkResult.registryRecord : null;
+  const match = registryRecord
+    ? {
+        matchedPaperId: registryRecord.paperId,
+        matchedExam: `${registryRecord.exam} ${registryRecord.year}`,
+        matchedSet: registryRecord.paperSet,
+        confidence: paperMatch?.confidence ?? 0,
+        centerCode: registryRecord.centerCode,
+        printerId: registryRecord.printerId,
+        batchId: registryRecord.printBatch,
+        status: registryRecord.status,
+        matchedWatermarkId: registryRecord.watermarkId,
+        centerName: registryRecord.centerName,
+      }
+    : paperMatch;
 
   if (!match) {
+    const finalConfidence = 0;
     const attribution: AttributionRecord = {
       attributionId: getAttributionId(evidenceId),
       evidenceId,
@@ -327,23 +409,47 @@ export async function runAttributionForEvidence(evidenceId: string, ocrText: str
       status: "no-match",
       matchedWatermarkId: null,
       centerName: null,
-      createdAt: new Date().toISOString(),
+      ocrConfidence,
+      watermarkConfidence: watermark.confidence,
+      finalConfidence,
+      createdAt: attributionCreatedAt,
     };
 
     await writeAttribution(attribution);
+    const report = await writeForensicReport({
+      reportId: getReportId(evidenceId),
+      evidenceId,
+      paperIdentified: null,
+      watermarkId: watermark.watermarkId,
+      centerCode: null,
+      printerId: null,
+      batchId: null,
+      riskLevel: null,
+      status: "no-match",
+      ocrConfidence,
+      watermarkConfidence: watermark.confidence,
+      finalConfidence,
+      timestamp: attribution.createdAt,
+    });
     const completedEvent: EvidenceActivityEvent = {
       eventId: randomUUID(),
       type: "attribution-complete",
       title: "Attribution Complete",
       evidenceId,
-      timestamp: attribution.createdAt,
+      timestamp: addMilliseconds(attribution.createdAt, 1),
       detail: ocrText.trim() ? "No registry match found" : "No OCR text available",
     };
     await appendActivity(completedEvent);
 
-    return { attribution, activity: [startedEvent, completedEvent] };
+    return {
+      attribution,
+      watermark,
+      forensicReport: report,
+      activity: [...watermarkActivity, startedEvent, completedEvent],
+    };
   }
 
+  const finalConfidence = getFinalConfidence(ocrConfidence, match.confidence, watermark.confidence);
   const attribution: AttributionRecord = {
     attributionId: getAttributionId(evidenceId),
     evidenceId,
@@ -357,10 +463,28 @@ export async function runAttributionForEvidence(evidenceId: string, ocrText: str
     status: match.status,
     matchedWatermarkId: match.matchedWatermarkId,
     centerName: match.centerName,
-    createdAt: new Date().toISOString(),
+    ocrConfidence,
+    watermarkConfidence: watermark.confidence,
+    finalConfidence,
+    createdAt: attributionCreatedAt,
   };
 
   await writeAttribution(attribution);
+  const report = await writeForensicReport({
+    reportId: getReportId(evidenceId),
+    evidenceId,
+    paperIdentified: match.matchedPaperId,
+    watermarkId: watermark.watermarkId ?? match.matchedWatermarkId,
+    centerCode: match.centerCode,
+    printerId: match.printerId,
+    batchId: match.batchId,
+    riskLevel: match.status === "compromised" ? "critical" : match.status,
+    status: "investigation-complete",
+    ocrConfidence,
+    watermarkConfidence: watermark.confidence,
+    finalConfidence,
+    timestamp: attribution.createdAt,
+  });
 
   const matchedEvent: EvidenceActivityEvent = {
     eventId: randomUUID(),
@@ -375,7 +499,7 @@ export async function runAttributionForEvidence(evidenceId: string, ocrText: str
     type: "source-identified",
     title: "Source Identified",
     evidenceId,
-    timestamp: attribution.createdAt,
+    timestamp: addMilliseconds(attribution.createdAt, 1),
     detail: `${match.centerCode} / ${match.printerId} / ${match.batchId}`,
   };
   const completedEvent: EvidenceActivityEvent = {
@@ -383,17 +507,35 @@ export async function runAttributionForEvidence(evidenceId: string, ocrText: str
     type: "attribution-complete",
     title: "Attribution Complete",
     evidenceId,
-    timestamp: attribution.createdAt,
+    timestamp: addMilliseconds(attribution.createdAt, 2),
     detail: match.status.toUpperCase(),
+  };
+  const investigationCompletedEvent: EvidenceActivityEvent = {
+    eventId: randomUUID(),
+    type: "investigation-completed",
+    title: "Investigation Completed",
+    evidenceId,
+    timestamp: addMilliseconds(attribution.createdAt, 3),
+    detail: `${finalConfidence}% final confidence`,
   };
 
   await appendActivity(matchedEvent);
   await appendActivity(sourceEvent);
   await appendActivity(completedEvent);
+  await appendActivity(investigationCompletedEvent);
 
   return {
     attribution,
-    activity: [startedEvent, matchedEvent, sourceEvent, completedEvent],
+    watermark,
+    forensicReport: report,
+    activity: [
+      ...watermarkActivity,
+      startedEvent,
+      matchedEvent,
+      sourceEvent,
+      completedEvent,
+      investigationCompletedEvent,
+    ],
   };
 }
 
@@ -520,6 +662,40 @@ async function readAttributions(): Promise<AttributionRecord[]> {
   );
 }
 
+async function readWatermarks(): Promise<WatermarkExtractionRecord[]> {
+  await ensureEvidenceStorage();
+
+  const entries = await readdir(WATERMARKS_DIR, { withFileTypes: true });
+  const watermarks = await Promise.all(
+    entries
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+      .map(async (entry) => {
+        const raw = await readFile(path.join(WATERMARKS_DIR, entry.name), "utf8");
+        return JSON.parse(raw) as WatermarkExtractionRecord;
+      }),
+  );
+
+  return watermarks.sort(
+    (a, b) => new Date(b.extractedAt).getTime() - new Date(a.extractedAt).getTime(),
+  );
+}
+
+async function readForensicReports(): Promise<ForensicReport[]> {
+  await ensureEvidenceStorage();
+
+  const entries = await readdir(REPORTS_DIR, { withFileTypes: true });
+  const reports = await Promise.all(
+    entries
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+      .map(async (entry) => {
+        const raw = await readFile(path.join(REPORTS_DIR, entry.name), "utf8");
+        return JSON.parse(raw) as ForensicReport;
+      }),
+  );
+
+  return reports.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+}
+
 async function getAnalysisJob(jobId: string): Promise<AnalysisJob | null> {
   await ensureEvidenceStorage();
 
@@ -543,6 +719,25 @@ async function writeAttribution(attribution: AttributionRecord) {
     JSON.stringify(attribution, null, 2),
     "utf8",
   );
+}
+
+async function writeWatermark(watermark: WatermarkExtractionRecord) {
+  await ensureEvidenceStorage();
+  await writeFile(
+    path.join(WATERMARKS_DIR, `${watermark.evidenceId}.json`),
+    JSON.stringify(watermark, null, 2),
+    "utf8",
+  );
+}
+
+async function writeForensicReport(report: ForensicReport) {
+  await ensureEvidenceStorage();
+  await writeFile(
+    path.join(REPORTS_DIR, `${report.evidenceId}.json`),
+    JSON.stringify(report, null, 2),
+    "utf8",
+  );
+  return report;
 }
 
 async function readActivity(): Promise<EvidenceActivityEvent[]> {
@@ -602,4 +797,33 @@ function normalizeStoredRecord(record: StoredEvidenceRecord): StoredEvidenceReco
 function getAttributionId(evidenceId: string) {
   const suffix = evidenceId.replace(/^EV-/, "");
   return `ATTR-${suffix}`;
+}
+
+function getWatermarkExtractionId(evidenceId: string) {
+  const suffix = evidenceId.replace(/^EV-/, "");
+  return `WMX-${suffix}`;
+}
+
+function getReportId(evidenceId: string) {
+  const suffix = evidenceId.replace(/^EV-/, "");
+  return `FR-${suffix}`;
+}
+
+function addMilliseconds(timestamp: string, milliseconds: number) {
+  const date = new Date(timestamp);
+  date.setMilliseconds(date.getMilliseconds() + milliseconds);
+  return date.toISOString();
+}
+
+function getFinalConfidence(
+  ocrConfidence: number | null,
+  paperConfidence: number | null,
+  watermarkConfidence: number | null,
+) {
+  if (watermarkConfidence !== null && watermarkConfidence > 0) {
+    const ocrComponent = paperConfidence ?? ocrConfidence ?? 0;
+    return Math.round(ocrComponent * 0.4 + watermarkConfidence * 0.6);
+  }
+
+  return paperConfidence ?? ocrConfidence ?? 0;
 }

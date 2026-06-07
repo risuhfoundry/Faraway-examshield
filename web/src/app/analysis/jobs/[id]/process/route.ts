@@ -34,6 +34,7 @@ export async function POST(
     const attribution = await runAttributionForEvidence(
       completed.evidence.evidenceId,
       completed.evidence.ocrText ?? "",
+      completed.evidence.ocrConfidence,
     );
     timeline.push(...attribution.activity);
 
@@ -42,6 +43,8 @@ export async function POST(
       evidence: completed.evidence,
       job: completed.job,
       attribution: attribution.attribution,
+      watermark: attribution.watermark,
+      forensicReport: attribution.forensicReport,
       activity: timeline,
     });
   } catch (error) {

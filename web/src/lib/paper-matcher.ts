@@ -2,9 +2,9 @@ import { existsSync, readFileSync } from "fs";
 import path from "path";
 import type { AttributionStatus } from "./evidence-types";
 
-type PaperStatus = Exclude<AttributionStatus, "no-match">;
+export type PaperStatus = Exclude<AttributionStatus, "no-match">;
 
-type PaperRegistryRecord = {
+export type PaperRegistryRecord = {
   watermarkId: string;
   paperId: string;
   exam: string;
@@ -104,7 +104,8 @@ const STOP_WORDS = new Set([
 ]);
 
 export function matchPaperFromOcr(ocrText: string): PaperMatch | null {
-  const queryTokens = tokenize(ocrText);
+  const comparableText = getComparableOcrText(ocrText);
+  const queryTokens = tokenize(comparableText);
   if (queryTokens.size < 4) {
     return null;
   }
@@ -114,7 +115,7 @@ export function matchPaperFromOcr(ocrText: string): PaperMatch | null {
     const overlap = intersectionSize(queryTokens, referenceTokens);
     const queryCoverage = overlap / queryTokens.size;
     const referenceCoverage = overlap / referenceTokens.size;
-    const lineScore = scoreLineSimilarity(ocrText, reference.referenceText);
+    const lineScore = scoreLineSimilarity(comparableText, reference.referenceText);
     const confidence = Math.min(
       96,
       Math.round(queryCoverage * 76 + referenceCoverage * 4 + lineScore * 20),
@@ -128,7 +129,7 @@ export function matchPaperFromOcr(ocrText: string): PaperMatch | null {
     return null;
   }
 
-  const custodyRecord = selectCustodyRecord(best.reference.paperId);
+  const custodyRecord = findBestCustodyRecordForPaper(best.reference.paperId);
   if (!custodyRecord) {
     return null;
   }
@@ -147,7 +148,7 @@ export function matchPaperFromOcr(ocrText: string): PaperMatch | null {
   };
 }
 
-function selectCustodyRecord(paperId: string): PaperRegistryRecord | null {
+export function findBestCustodyRecordForPaper(paperId: string): PaperRegistryRecord | null {
   const records = loadCoreRegistry().filter((record) => record.paperId === paperId);
   if (records.length === 0) {
     return null;
@@ -156,7 +157,12 @@ function selectCustodyRecord(paperId: string): PaperRegistryRecord | null {
   return records.sort(compareCustodyPriority)[0];
 }
 
-function loadCoreRegistry(): PaperRegistryRecord[] {
+export function findRegistryRecordByWatermark(watermarkId: string): PaperRegistryRecord | null {
+  const normalized = normalizeWatermarkId(watermarkId);
+  return loadCoreRegistry().find((record) => record.watermarkId === normalized) ?? null;
+}
+
+export function loadCoreRegistry(): PaperRegistryRecord[] {
   if (!existsSync(CORE_REGISTRY_PATH)) {
     return [
       {
@@ -178,6 +184,32 @@ function loadCoreRegistry(): PaperRegistryRecord[] {
   }
 
   return JSON.parse(readFileSync(CORE_REGISTRY_PATH, "utf8")) as PaperRegistryRecord[];
+}
+
+export function formatMatchedExam(record: PaperRegistryRecord) {
+  return `${record.exam} ${record.year}`;
+}
+
+export function normalizeWatermarkId(value: string) {
+  const match = /WMK[-\s]?(\d{1,4})/i.exec(value);
+  return match ? `WMK-${String(Number(match[1])).padStart(3, "0")}` : value.trim().toUpperCase();
+}
+
+function getComparableOcrText(ocrText: string) {
+  const lines = ocrText
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  const questionLines = lines.filter((line) => /\b(question|q)\s*\d+/i.test(line));
+  if (questionLines.length >= 2) {
+    return questionLines.join("\n");
+  }
+
+  return lines
+    .filter((line) => !/WMK[-\s]?\d{1,4}/i.test(line))
+    .filter((line) => !/\b(EXAMSHIELD|SECURE PAPER|WATERMARK)\b/i.test(line))
+    .join("\n");
 }
 
 function compareCustodyPriority(a: PaperRegistryRecord, b: PaperRegistryRecord) {

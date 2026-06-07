@@ -11,6 +11,8 @@ const emptyState: EvidenceListResponse = {
   activity: [],
   jobs: [],
   attributions: [],
+  watermarks: [],
+  forensicReports: [],
   stats: {
     totalEvidence: 0,
     pendingAnalysis: 0,
@@ -114,6 +116,12 @@ export default function EvidenceCenter() {
             const attribution = data.attributions.find(
               (report) => report.evidenceId === item.evidenceId,
             );
+            const watermark = data.watermarks.find(
+              (report) => report.evidenceId === item.evidenceId,
+            );
+            const forensicReport = data.forensicReports.find(
+              (report) => report.evidenceId === item.evidenceId,
+            );
 
             return (
             <motion.div
@@ -171,6 +179,18 @@ export default function EvidenceCenter() {
                   <div className="text-white/35 uppercase tracking-widest mb-1">Attribution</div>
                   <div className="text-white/80">
                     {attribution?.matchedPaperId ?? (attribution ? "No Match" : "Pending")}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-white/35 uppercase tracking-widest mb-1">Watermark</div>
+                  <div className="text-white/80">
+                    {watermark?.watermarkId ?? (watermark ? "Not Detected" : "Pending")}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-white/35 uppercase tracking-widest mb-1">Final</div>
+                  <div className="text-white/80">
+                    {forensicReport ? `${forensicReport.finalConfidence}%` : "Pending"}
                   </div>
                 </div>
               </div>
