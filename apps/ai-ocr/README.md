@@ -30,3 +30,17 @@ Response:
 ```
 
 The worker only performs OCR.
+
+## Quality Gate
+
+The worker runs a small set of Tesseract page segmentation modes, scores the OCR candidates,
+and discards low-signal output. Natural photos, blank images, and noisy OCR fragments return:
+
+```json
+{
+  "status": "completed",
+  "confidence": 0,
+  "text": "",
+  "message": "No Exam Content Detected"
+}
+```
