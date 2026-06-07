@@ -1,0 +1,26 @@
+{
+  "name": "examshield-core",
+  "version": "1.0.0",
+  "description": "EXAMSHIELD Paper Registry — chain of custody data layer",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx cli.ts",
+    "query": "tsx cli.ts query",
+    "lookup": "tsx cli.ts lookup",
+    "watch": "tsx cli.ts watch",
+    "list": "tsx cli.ts list",
+    "compromised": "tsx cli.ts compromised",
+    "stats": "tsx cli.ts stats",
+    "seed": "tsx lib/seed.ts",
+    "test": "tsx lib/test.ts"
+  },
+  "dependencies": {
+    "chalk": "^5.3.0",
+    "commander": "^12.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.2",
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.0"
+  }
+}
