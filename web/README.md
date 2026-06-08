@@ -1,4 +1,28 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# EXAMSHIELD Web
+
+Next.js operations dashboard for evidence intake, forensic attribution, alerts, and the EXAMSHIELD AI client.
+
+## EXAMSHIELD AI
+
+The AI page talks to the standalone Python AI service at `http://127.0.0.1:8790` by default.
+
+Start the AI service:
+
+```powershell
+cd ..\apps\ai-service
+$env:NVIDIA_API_KEY="your-nvidia-api-key"
+$env:NVIDIA_NIM_MODEL="nvidia/llama-3.1-nemotron-nano-8b-v1"
+python service.py
+```
+
+Optional:
+
+```powershell
+$env:NVIDIA_NIM_BASE_URL="https://integrate.api.nvidia.com/v1"
+$env:NEXT_PUBLIC_EXAMSHIELD_AI_SERVICE_URL="http://127.0.0.1:8790"
+```
+
+Do not commit `.env.local` or API keys. The Python service can still stream a local threat snapshot without a NIM key.
 
 ## Getting Started
 
