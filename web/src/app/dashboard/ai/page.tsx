@@ -1,15 +1,17 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
+import Link from "next/link";
 import { motion } from "framer-motion";
 import {
   AlertTriangle,
+  ArrowUpRight,
   Bot,
   BrainCircuit,
   Check,
-  ChevronDown,
   Command,
   Copy,
+  ExternalLink,
   FileSearch,
   FileText,
   Loader2,
@@ -490,6 +492,15 @@ function CopyButton({ text }: { text: string }) {
 }
 
 function ToolResultPanel({ result }: { result: AiToolResult }) {
+  const toolActions: Record<string, { label: string; href: string }> = {
+    listEvidence: { label: "View Evidence Center", href: "/dashboard/evidence" },
+    getEvidence: { label: "View Evidence Center", href: "/dashboard/evidence" },
+    getAttribution: { label: "Open Investigation Workspace", href: "/dashboard/investigation" },
+    lookupPaper: { label: "View Registry", href: "/dashboard/threats" },
+    listThreats: { label: "View Threat Intelligence", href: "/dashboard/threats" },
+    generateReport: { label: "Command Center", href: "/dashboard" },
+  };
+
   return (
     <div className="border border-white/10 bg-white/[0.025]">
       <div className="grid grid-cols-1 lg:grid-cols-[1.1fr_1.4fr]">
@@ -505,7 +516,9 @@ function ToolResultPanel({ result }: { result: AiToolResult }) {
               className="min-h-28 border-b border-r border-white/10 p-4 last:border-r-0"
             >
               <div className="text-[10px] uppercase tracking-widest text-white/35">{metric.label}</div>
-              <div className="mt-4 break-words text-xl font-heading uppercase tracking-widest">{metric.value}</div>
+              <div className="mt-4 break-words text-xl font-heading uppercase tracking-widest">
+                <EvidenceLink value={metric.value} className="text-xl font-heading" />
+              </div>
             </div>
           ))}
         </div>
@@ -524,15 +537,61 @@ function ToolResultPanel({ result }: { result: AiToolResult }) {
                   className="flex items-start justify-between gap-4 border-t border-white/10 pt-3 first:border-t-0 first:pt-0"
                 >
                   <span className="text-xs uppercase tracking-widest text-white/35">{row.label}</span>
-                  <span className="max-w-[60%] text-right text-sm font-semibold text-white/85">{row.value}</span>
+                  <EvidenceLink value={row.value} className="max-w-[60%] text-right text-sm font-semibold text-white/85" />
                 </div>
               ))}
             </div>
           </div>
         ))}
       </div>
+
+      <div className="flex flex-wrap items-center gap-3 border-t border-white/10 px-5 py-4">
+        {result.evidenceIds.length > 0 && (
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-[10px] uppercase tracking-widest text-white/35">Linked Evidence:</span>
+            {result.evidenceIds.map((id) => (
+              <Link
+                key={id}
+                href={`/evidence/${id}`}
+                className="inline-flex items-center gap-1 border border-white/15 bg-white/[0.03] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-white/70 transition-colors hover:border-white/40 hover:text-white"
+              >
+                {id}
+                <ExternalLink className="h-2.5 w-2.5" />
+              </Link>
+            ))}
+          </div>
+        )}
+        {toolActions[result.tool] && (
+          <Link
+            href={toolActions[result.tool].href}
+            className="ml-auto inline-flex items-center gap-1.5 border border-white/15 bg-white/[0.03] px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.2em] text-white/60 transition-colors hover:border-white/40 hover:text-white"
+          >
+            {toolActions[result.tool].label}
+            <ArrowUpRight className="h-3 w-3" />
+          </Link>
+        )}
+      </div>
     </div>
   );
+}
+
+function EvidenceLink({ value, className }: { value: string; className?: string }) {
+  const evMatch = value.match(/\b(EV-\d+)\b/);
+  if (evMatch) {
+    return (
+      <Link href={`/evidence/${evMatch[1]}`} className={`inline-flex items-center gap-1 text-right text-sm font-semibold text-white/85 underline decoration-white/20 hover:decoration-white/60 ${className}`}>
+        {value}
+        <ExternalLink className="h-2.5 w-2.5 shrink-0 opacity-50" />
+      </Link>
+    );
+  }
+  const paperMatch = value.match(/\b([A-Z]{2,5}-\d{4}-\w)\b/);
+  if (paperMatch) {
+    return (
+      <span className={`text-right text-sm font-semibold text-white/85 ${className}`}>{value}</span>
+    );
+  }
+  return <span className={`text-right text-sm font-semibold text-white/85 ${className}`}>{value}</span>;
 }
 
 function CommandPalette({
