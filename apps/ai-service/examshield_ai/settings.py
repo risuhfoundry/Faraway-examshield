@@ -72,8 +72,8 @@ def load_settings() -> Settings:
             or os.environ.get("NIM_BASE_URL")
             or "https://integrate.api.nvidia.com/v1"
         ).rstrip("/"),
-        planner_timeout_seconds=float(os.environ.get("EXAMSHIELD_TOOL_PLANNER_TIMEOUT_SECONDS", "8")),
-        stream_timeout_seconds=float(os.environ.get("EXAMSHIELD_AI_STREAM_TIMEOUT_SECONDS", "45")),
+        planner_timeout_seconds=float(os.environ.get("EXAMSHIELD_TOOL_PLANNER_TIMEOUT_SECONDS", "5")),
+        stream_timeout_seconds=float(os.environ.get("EXAMSHIELD_AI_STREAM_TIMEOUT_SECONDS", "20")),
         cors_origin=os.environ.get("EXAMSHIELD_AI_CORS_ORIGIN", "*"),
     )
 

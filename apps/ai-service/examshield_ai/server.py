@@ -97,11 +97,15 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
             write_event({"type": "stage", "message": f"Tool planner unavailable: {type(exc).__name__}. Continuing with natural chat."})
             command = None
         if not command:
-            emitted = self.client.stream_chat(
-                model=self.settings.model,
-                messages=conversation_messages(prompt, history),
-                on_token=lambda token: write_event({"type": "token", "token": token}),
-            )
+            try:
+                emitted = self.client.stream_chat(
+                    model=self.settings.model,
+                    messages=conversation_messages(prompt, history),
+                    on_token=lambda token: write_event({"type": "token", "token": token}),
+                )
+            except Exception as exc:
+                write_event({"type": "error", "message": f"NIM stream failed: {exc}"})
+                emitted = False
             if not emitted:
                 write_event({"type": "error", "message": "Model stream returned no text."})
             return
@@ -115,11 +119,15 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
         )
         write_event({"type": "tool", "tool": execution.result["tool"], "result": execution.result})
 
-        emitted = self.client.stream_chat(
-            model=self.settings.model,
-            messages=grounded_messages(prompt, history, execution.model_context),
-            on_token=lambda token: write_event({"type": "token", "token": token}),
-        )
+        try:
+            emitted = self.client.stream_chat(
+                model=self.settings.model,
+                messages=grounded_messages(prompt, history, execution.model_context),
+                on_token=lambda token: write_event({"type": "token", "token": token}),
+            )
+        except Exception as exc:
+            write_event({"type": "error", "message": f"NIM stream failed: {exc}"})
+            emitted = False
         if not emitted:
             write_event({"type": "error", "message": "Model stream returned no grounded answer."})
 

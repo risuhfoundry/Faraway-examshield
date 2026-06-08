@@ -48,34 +48,44 @@ class NvidiaClient:
         model: str,
         messages: list[JsonObject],
         on_token: TokenWriter,
+        timeout: float | None = None,
     ) -> bool:
-        payload = {
-            "model": model,
-            "temperature": 0,
-            "top_p": 0.7,
-            "max_tokens": 260,
-            "stream": True,
-            "messages": messages,
-        }
-        request = self._request(payload)
-        emitted = False
-        with urllib.request.urlopen(request, timeout=self.settings.stream_timeout_seconds) as response:
-            for raw_line in response:
-                line = raw_line.decode("utf-8", errors="replace").strip()
-                if not line.startswith("data:"):
-                    continue
-                data = line[5:].strip()
-                if not data or data == "[DONE]":
-                    continue
-                try:
-                    parsed = json.loads(data)
-                except json.JSONDecodeError:
-                    continue
-                token = parsed.get("choices", [{}])[0].get("delta", {}).get("content") or ""
-                if token:
-                    emitted = True
-                    on_token(str(token))
-        return emitted
+        errors: list[str] = []
+        for candidate in self._candidate_models(model):
+            payload = {
+                "model": candidate,
+                "temperature": 0,
+                "top_p": 0.7,
+                "max_tokens": 180,
+                "stream": True,
+                "messages": messages,
+            }
+            request = self._request(payload)
+            try:
+                timeout_sec = timeout or self.settings.stream_timeout_seconds
+                with urllib.request.urlopen(request, timeout=timeout_sec) as response:
+                    emitted = False
+                    for raw_line in response:
+                        line = raw_line.decode("utf-8", errors="replace").strip()
+                        if not line.startswith("data:"):
+                            continue
+                        data = line[5:].strip()
+                        if not data or data == "[DONE]":
+                            continue
+                        try:
+                            parsed = json.loads(data)
+                        except json.JSONDecodeError:
+                            continue
+                        token = parsed.get("choices", [{}])[0].get("delta", {}).get("content") or ""
+                        if token:
+                            emitted = True
+                            on_token(str(token))
+                    if emitted:
+                        return True
+                    errors.append(f"{candidate}: empty stream")
+            except Exception as exc:
+                errors.append(f"{candidate}: {type(exc).__name__}: {exc}")
+        raise RuntimeError("NVIDIA NIM stream failed for all models: " + " | ".join(errors))
 
     def chat_text(
         self,
