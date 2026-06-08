@@ -1,12 +1,15 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { motion } from "framer-motion";
 import {
   AlertTriangle,
   Bot,
   BrainCircuit,
+  Check,
+  ChevronDown,
   Command,
+  Copy,
   FileSearch,
   FileText,
   Loader2,
@@ -15,6 +18,7 @@ import {
   Search,
   Send,
   ShieldAlert,
+  Terminal,
   X,
   type LucideIcon,
 } from "lucide-react";
@@ -104,6 +108,7 @@ export default function ExamshieldAiPage() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const promptRef = useRef<HTMLTextAreaElement>(null);
   const chatBottomRef = useRef<HTMLDivElement>(null);
+  const chatContainerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     chatBottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -116,7 +121,6 @@ export default function ExamshieldAiPage() {
         setPaletteOpen((open) => !open);
       }
     }
-
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
@@ -180,12 +184,10 @@ export default function ExamshieldAiPage() {
           smoother.enqueue(event.token);
           return;
         }
-
         if (event.type === "done") {
           doneEvent = event;
           return;
         }
-
         setMessages((existing) => applyStreamEvent(existing, assistantId, event));
         if (event.type === "tool") {
           setCurrentInvestigation(event.result.currentInvestigation);
@@ -209,6 +211,20 @@ export default function ExamshieldAiPage() {
       );
     } finally {
       setStreamingId(null);
+    }
+  }
+
+  const handleKeyDown = useCallback((event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      sendPrompt();
+    }
+  }, [prompt, streamingId, messages, currentInvestigation]);
+
+  function autoResize(textarea: HTMLTextAreaElement | null) {
+    if (textarea) {
+      textarea.style.height = "auto";
+      textarea.style.height = Math.min(textarea.scrollHeight, 200) + "px";
     }
   }
 
@@ -241,13 +257,13 @@ export default function ExamshieldAiPage() {
           </div>
         </header>
 
-        <section className="flex-1 overflow-y-auto py-3">
+        <section ref={chatContainerRef} className="flex-1 overflow-y-auto py-3 scroll-smooth">
           {messages.length === 0 ? (
             <SuggestedActions onSelect={fillPrompt} />
           ) : (
-            <div className="mx-auto max-w-5xl space-y-4 pb-4">
-              {messages.map((message) => (
-                <ChatBubble key={message.id} message={message} />
+            <div className="mx-auto max-w-5xl space-y-5 pb-4">
+              {messages.map((message, index) => (
+                <ChatBubble key={message.id} message={message} isLatest={index === messages.length - 1} />
               ))}
               <div ref={chatBottomRef} />
             </div>
@@ -255,30 +271,29 @@ export default function ExamshieldAiPage() {
         </section>
 
         <footer className="shrink-0 pt-4">
-          <div className="mx-auto flex max-w-5xl gap-3 border border-white/10 bg-black p-3">
+          <div className="mx-auto flex max-w-5xl items-end gap-3 border border-white/10 bg-black p-3">
             <textarea
-              ref={promptRef}
+              ref={(el) => { promptRef.current = el; autoResize(el); }}
               value={prompt}
-              onChange={(event) => setPrompt(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" && !event.shiftKey) {
-                  event.preventDefault();
-                  sendPrompt();
-                }
-              }}
+              onChange={(event) => { setPrompt(event.target.value); autoResize(event.target); }}
+              onKeyDown={handleKeyDown}
               rows={1}
               placeholder="Ask anything..."
-              className="min-h-11 flex-1 resize-none bg-transparent px-2 py-2.5 text-sm text-white outline-none placeholder:text-white/25"
+              disabled={Boolean(streamingId)}
+              className="min-h-11 max-h-48 flex-1 resize-none bg-transparent px-2 py-2.5 text-sm text-white outline-none placeholder:text-white/25 disabled:opacity-40"
             />
             <button
               type="button"
               onClick={() => sendPrompt()}
               disabled={!prompt.trim() || Boolean(streamingId)}
-              className="flex h-11 w-11 shrink-0 items-center justify-center border border-white bg-white text-black disabled:border-white/10 disabled:bg-white/10 disabled:text-white/25"
+              className="flex h-11 w-11 shrink-0 items-center justify-center border border-white bg-white text-black transition-colors hover:bg-white/90 disabled:border-white/10 disabled:bg-white/10 disabled:text-white/25"
               title="Send command"
             >
               {streamingId ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
             </button>
+          </div>
+          <div className="mx-auto mt-2 max-w-5xl text-right text-[10px] uppercase tracking-widest text-white/20">
+            {streamingId ? "Streaming response..." : "Ctrl+Enter for new line"}
           </div>
         </footer>
       </main>
@@ -298,14 +313,15 @@ export default function ExamshieldAiPage() {
 
 function SuggestedActions({ onSelect }: { onSelect: (prompt: string) => void }) {
   return (
-    <div className="mx-auto flex h-full max-w-5xl flex-col justify-end pb-6">
-      <div className="space-y-4">
+    <div className="mx-auto flex h-full max-w-5xl flex-col justify-end pb-8">
+      <div className="space-y-5">
         <div>
-          <div className="text-xs uppercase tracking-[0.2em] text-white/35">
+          <div className="flex items-center gap-2 text-xs uppercase tracking-[0.2em] text-white/35">
+            <Terminal className="h-3.5 w-3.5" />
             Suggested Commands
           </div>
           <p className="mt-2 text-sm text-white/45">
-            Pick one, or type directly below.
+            Pick a command or type your own below.
           </p>
         </div>
 
@@ -315,10 +331,10 @@ function SuggestedActions({ onSelect }: { onSelect: (prompt: string) => void }) 
               key={action.title}
               type="button"
               onClick={() => onSelect(action.prompt)}
-              className="inline-flex min-h-11 items-center gap-2 border border-white/10 bg-white/[0.02] px-3 py-2 text-left transition-colors hover:border-white/35 hover:bg-white/[0.05]"
+              className="group inline-flex min-h-11 items-center gap-2 border border-white/10 bg-white/[0.02] px-3 py-2 text-left transition-all hover:border-white/30 hover:bg-white/[0.06]"
             >
-              <action.icon className="h-4 w-4 shrink-0 text-white/70" />
-              <span className="text-[11px] font-semibold uppercase tracking-widest text-white">
+              <action.icon className="h-4 w-4 shrink-0 text-white/50 group-hover:text-white/80" />
+              <span className="text-[11px] font-semibold uppercase tracking-widest text-white/80 group-hover:text-white">
                 {action.title}
               </span>
             </button>
@@ -329,12 +345,17 @@ function SuggestedActions({ onSelect }: { onSelect: (prompt: string) => void }) 
   );
 }
 
-function ChatBubble({ message }: { message: ChatMessage }) {
+function ChatBubble({ message, isLatest }: { message: ChatMessage; isLatest?: boolean }) {
   if (message.role === "operator") {
     return (
-      <div className="ml-auto max-w-2xl border border-white/15 bg-white/[0.04] p-4 text-white">
-        <div className="mb-2 text-[10px] font-bold uppercase tracking-[0.2em] text-white/40">Investigator</div>
-        <div className="text-sm font-medium text-white/90">{message.content}</div>
+      <div className="flex justify-end">
+        <div className="max-w-2xl border border-white/15 bg-white/[0.04] px-5 py-4">
+          <div className="mb-2 flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.2em] text-white/40">
+            <div className="h-1.5 w-1.5 rounded-full bg-white/30" />
+            Investigator
+          </div>
+          <div className="text-sm leading-relaxed text-white/90">{message.content}</div>
+        </div>
       </div>
     );
   }
@@ -343,50 +364,75 @@ function ChatBubble({ message }: { message: ChatMessage }) {
 
   if (!hasTool) {
     return (
-      <div className="max-w-3xl border border-white/10 bg-white/[0.02] p-4">
-        <div className="mb-3 flex items-center gap-2 text-[10px] uppercase tracking-[0.2em] text-white/35">
-          <Bot className="h-3.5 w-3.5" />
-          EXAMSHIELD AI
-          {message.streaming && (
-            <span className="ml-auto flex items-center gap-2 text-white/45">
-              <Loader2 className="h-3 w-3 animate-spin" />
-              Streaming
-            </span>
+      <motion.div
+        initial={{ opacity: 0, y: 8 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="max-w-3xl border border-white/10 bg-white/[0.02]"
+      >
+        <div className="flex items-center justify-between border-b border-white/5 px-5 py-3">
+          <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.2em] text-white/35">
+            <Bot className="h-3.5 w-3.5" />
+            EXAMSHIELD AI
+            {isLatest && message.streaming && (
+              <span className="ml-2 inline-flex items-center gap-1.5 text-white/45">
+                <span className="h-1 w-1 animate-pulse rounded-full bg-white" />
+                <span className="h-1 w-1 animate-pulse rounded-full bg-white [animation-delay:150ms]" />
+                <span className="h-1 w-1 animate-pulse rounded-full bg-white [animation-delay:300ms]" />
+              </span>
+            )}
+          </div>
+          {message.content && !message.streaming && (
+            <CopyButton text={message.content} />
           )}
         </div>
-        <pre className="whitespace-pre-wrap font-mono text-sm leading-7 text-white/85">
-          {message.content}
-          {message.streaming && <span className="ml-1 inline-block h-4 w-1 animate-pulse bg-white align-middle" />}
-        </pre>
-      </div>
+        <div className="px-5 py-4">
+          <div className="whitespace-pre-wrap font-mono text-sm leading-7 text-white/85">
+            {message.content}
+            {message.streaming && <span className="ml-0.5 inline-block h-4 w-[3px] animate-pulse bg-white align-middle" />}
+          </div>
+        </div>
+      </motion.div>
     );
   }
 
   return (
-    <div className="max-w-5xl border border-white/10 bg-black">
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 p-4">
+    <motion.div
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="border border-white/10 bg-black"
+    >
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 px-5 py-4">
         <div className="flex items-center gap-3">
-          <Bot className="h-5 w-5 text-white" />
+          <div className="border border-white/15 bg-white/[0.04] p-1.5">
+            <Bot className="h-4 w-4 text-white" />
+          </div>
           <div>
             <div className="text-xs font-bold uppercase tracking-[0.2em] text-white">EXAMSHIELD AI</div>
-            <div className="mt-1 text-[10px] uppercase tracking-widest text-white/35">
+            <div className="mt-0.5 flex items-center gap-2 text-[10px] uppercase tracking-widest text-white/35">
+              <div className="h-1 w-1 rounded-full bg-green-500/60" />
               {message.model ?? "Tool Router"}
             </div>
           </div>
         </div>
-        {message.streaming && (
-          <div className="flex items-center gap-2 text-[10px] uppercase tracking-widest text-white/45">
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            Streaming
-          </div>
-        )}
+        <div className="flex items-center gap-3">
+          {message.content && !message.streaming && (
+            <CopyButton text={message.content} />
+          )}
+          {message.streaming && (
+            <div className="flex items-center gap-2 text-[10px] uppercase tracking-widest text-white/45">
+              <Loader2 className="h-3 w-3 animate-spin" />
+              Streaming
+            </div>
+          )}
+        </div>
       </div>
 
-      <div className="space-y-4 p-4">
+      <div className="space-y-4 p-5">
         {message.stages && message.stages.length > 0 && (
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+          <div className="flex flex-wrap gap-2">
             {message.stages.slice(-3).map((stage) => (
-              <div key={stage} className="border border-white/10 bg-white/[0.02] px-3 py-2 text-[10px] uppercase tracking-widest text-white/45">
+              <div key={stage} className="flex items-center gap-1.5 border border-white/10 bg-white/[0.02] px-3 py-1.5 text-[10px] uppercase tracking-widest text-white/45">
+                <div className="h-1.5 w-1.5 rounded-full bg-blue-500/50" />
                 {stage}
               </div>
             ))}
@@ -395,24 +441,57 @@ function ChatBubble({ message }: { message: ChatMessage }) {
 
         <ToolResultPanel result={message.toolResult!} />
 
-        <div className="border border-white/10 bg-white/[0.02] p-4">
+        <div className="border-l-2 border-white/10 pl-4">
           <div className="mb-3 flex items-center gap-2 text-[10px] uppercase tracking-[0.2em] text-white/35">
             <MessageSquare className="h-3.5 w-3.5" />
             Analyst Transmission
           </div>
-          <pre className="whitespace-pre-wrap font-mono text-sm leading-7 text-white/85">
+          <div className="whitespace-pre-wrap font-mono text-sm leading-7 text-white/85">
             {message.content}
-            {message.streaming && <span className="ml-1 inline-block h-4 w-1 animate-pulse bg-white align-middle" />}
-          </pre>
+            {message.streaming && <span className="ml-0.5 inline-block h-4 w-[3px] animate-pulse bg-white align-middle" />}
+          </div>
         </div>
       </div>
-    </div>
+    </motion.div>
+  );
+}
+
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+
+  async function handleCopy() {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {}
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={handleCopy}
+      className="flex items-center gap-1 text-[10px] uppercase tracking-widest text-white/30 transition-colors hover:text-white/60"
+      title="Copy response"
+    >
+      {copied ? (
+        <>
+          <Check className="h-3 w-3" />
+          Copied
+        </>
+      ) : (
+        <>
+          <Copy className="h-3 w-3" />
+          Copy
+        </>
+      )}
+    </button>
   );
 }
 
 function ToolResultPanel({ result }: { result: AiToolResult }) {
   return (
-    <div className="border border-white/10 bg-white/[0.025] text-white">
+    <div className="border border-white/10 bg-white/[0.025]">
       <div className="grid grid-cols-1 lg:grid-cols-[1.1fr_1.4fr]">
         <div className="border-b border-white/10 p-5 lg:border-b-0 lg:border-r lg:border-white/10">
           <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-white/35">Tool Report</div>
@@ -421,7 +500,10 @@ function ToolResultPanel({ result }: { result: AiToolResult }) {
         </div>
         <div className="grid grid-cols-2 md:grid-cols-4">
           {result.metrics.map((metric) => (
-            <div key={`${metric.label}-${metric.value}`} className="min-h-28 border-b border-r border-white/10 p-4 last:border-r-0">
+            <div
+              key={`${metric.label}-${metric.value}`}
+              className="min-h-28 border-b border-r border-white/10 p-4 last:border-r-0"
+            >
               <div className="text-[10px] uppercase tracking-widest text-white/35">{metric.label}</div>
               <div className="mt-4 break-words text-xl font-heading uppercase tracking-widest">{metric.value}</div>
             </div>
@@ -437,7 +519,10 @@ function ToolResultPanel({ result }: { result: AiToolResult }) {
             </div>
             <div className="space-y-3">
               {section.rows.slice(0, 6).map((row) => (
-                <div key={`${section.title}-${row.label}-${row.value}`} className="flex items-start justify-between gap-4 border-t border-white/10 pt-3 first:border-t-0 first:pt-0">
+                <div
+                  key={`${section.title}-${row.label}-${row.value}`}
+                  className="flex items-start justify-between gap-4 border-t border-white/10 pt-3 first:border-t-0 first:pt-0"
+                >
                   <span className="text-xs uppercase tracking-widest text-white/35">{row.label}</span>
                   <span className="max-w-[60%] text-right text-sm font-semibold text-white/85">{row.value}</span>
                 </div>
@@ -505,17 +590,14 @@ async function consumeStream(
     if (done) {
       break;
     }
-
     buffer += decoder.decode(value, { stream: true });
     const chunks = buffer.split("\n\n");
     buffer = chunks.pop() ?? "";
-
     for (const chunk of chunks) {
       for (const line of chunk.split("\n")) {
         if (!line.startsWith("data:")) {
           continue;
         }
-
         const data = line.slice(5).trim();
         if (data) {
           onEvent(JSON.parse(data) as AiStreamEvent);
@@ -534,18 +616,15 @@ function createTokenSmoother(onToken: (token: string) => void) {
     if (timer !== null) {
       return;
     }
-
     timer = window.setTimeout(tick, 16);
   }
 
   function tick() {
     timer = null;
-
     if (!queued) {
       resolveDrain();
       return;
     }
-
     const size = queued.length > 900 ? 18 : queued.length > 420 ? 10 : 4;
     const chunk = queued.slice(0, size);
     queued = queued.slice(size);
@@ -568,7 +647,6 @@ function createTokenSmoother(onToken: (token: string) => void) {
       if (!queued && timer === null) {
         return Promise.resolve();
       }
-
       return new Promise<void>((resolve) => {
         drainResolvers.push(resolve);
       });
@@ -581,49 +659,24 @@ function applyStreamEvent(messages: ChatMessage[], assistantId: string, event: A
     if (message.id !== assistantId) {
       return message;
     }
-
     if (event.type === "stage") {
-      return {
-        ...message,
-        stages: [...(message.stages ?? []), event.message],
-      };
+      return { ...message, stages: [...(message.stages ?? []), event.message] };
     }
-
     if (event.type === "tool") {
-      return {
-        ...message,
-        toolResult: event.result,
-      };
+      return { ...message, toolResult: event.result };
     }
-
     if (event.type === "token") {
-      return {
-        ...message,
-        content: `${message.content}${event.token}`,
-      };
+      return { ...message, content: `${message.content}${event.token}` };
     }
-
     if (event.type === "meta") {
-      return {
-        ...message,
-        model: event.model,
-      };
+      return { ...message, model: event.model };
     }
-
     if (event.type === "error") {
-      return {
-        ...message,
-        stages: [...(message.stages ?? []), event.message],
-      };
+      return { ...message, stages: [...(message.stages ?? []), event.message] };
     }
-
     if (event.type === "done") {
-      return {
-        ...message,
-        streaming: false,
-      };
+      return { ...message, streaming: false };
     }
-
     return message;
   });
 }
