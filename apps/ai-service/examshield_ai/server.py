@@ -40,7 +40,7 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
 
     def do_HEAD(self) -> None:
         path = urlparse(self.path).path
-        if path == "/health":
+        if path in {"/health", "/"}:
             self.send_response(200)
             self._cors_headers()
             self.send_header("Content-Type", "application/json")

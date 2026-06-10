@@ -106,11 +106,6 @@ const GROUNDED_SYSTEM_PROMPT =
   "Never fabricate details not in the tool data. If something is unknown, say so. " +
   "No bullet points, no markdown, no tables — just natural flowing text.";
 
-function getBackendUrl() {
-  if (typeof window !== "undefined") return "";
-  return process.env.EXAMSHIELD_API_URL?.trim().replace(/\/$/, "") ?? "";
-}
-
 export default function ExamshieldAiPage() {
   const [prompt, setPrompt] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -175,7 +170,6 @@ export default function ExamshieldAiPage() {
     setStreamingId(assistantId);
 
     try {
-      const backendUrl = getBackendUrl();
       const historyPayload = messages.slice(-6).map((message) => ({
         role: message.role,
         content: message.content,
@@ -183,23 +177,21 @@ export default function ExamshieldAiPage() {
 
       let planResult: { tool: string | null; result?: AiToolResult; model_context?: string; error?: string } | null = null;
 
-      if (backendUrl) {
-        try {
-          const planRes = await fetch(`${backendUrl}/plan`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              prompt: trimmed,
-              currentEvidenceId: currentInvestigation.evidenceId,
-              messages: historyPayload,
-            }),
-          });
-          if (planRes.ok) {
-            planResult = await planRes.json();
-          }
-        } catch {
-          // Backend unreachable — fall through to direct chat
+      try {
+        const planRes = await fetch("/api/plan", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            prompt: trimmed,
+            currentEvidenceId: currentInvestigation.evidenceId,
+            messages: historyPayload,
+          }),
+        });
+        if (planRes.ok) {
+          planResult = await planRes.json();
         }
+      } catch {
+        // Backend unreachable — fall through to direct chat
       }
 
       if (planResult?.tool && planResult.result) {
