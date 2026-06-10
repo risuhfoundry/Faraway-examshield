@@ -35,12 +35,18 @@ Thumbs.db
 # Python
 __pycache__/
 *.py[cod]
+.venv/
+venv/
+*.pt
 
 # Vercel
 .vercel
 
 # Credentials
 cred.txt
+
+# Runtime files
+todo.txt
 
 # Generated seed data (regenerable via `npm run seed`)
 apps/core/data/*.json
@@ -63,4 +69,6 @@ apps/api/uploads/evidence/telegram-events/*
 !apps/api/uploads/evidence/telegram-events/.gitkeep
 apps/api/uploads/evidence/alerts/*
 !apps/api/uploads/evidence/alerts/.gitkeep
+apps/api/uploads/evidence/monitored-groups/*
+!apps/api/uploads/evidence/monitored-groups/.gitkeep
 apps/api/uploads/evidence/activity.json

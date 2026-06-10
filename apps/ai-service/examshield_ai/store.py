@@ -46,6 +46,7 @@ class EvidenceStore:
             "reports",
             "telegram-events",
             "alerts",
+            "monitored-groups",
         ):
             (self.root / name).mkdir(parents=True, exist_ok=True)
 
@@ -468,7 +469,7 @@ class EvidenceStore:
         )
         return {"evidence": evidence, "job": updated_job, "activity": [activity]}
 
-    def create_telegram_event(self, *, message_id: str, chat_id: str, timestamp: str, text: str | None, file: UploadedFile | None) -> JsonObject:
+    def create_telegram_event(self, *, message_id: str, chat_id: str, timestamp: str, text: str | None, file: UploadedFile | None, detection: dict[str, Any] | None = None) -> JsonObject:
         self.ensure_storage()
         existing = self.find_telegram_event(chat_id, message_id)
         if existing:
@@ -479,20 +480,31 @@ class EvidenceStore:
                 "duplicate": True,
             }
         if not file:
+            evidence_id = None
+            activity: list[JsonObject] = []
+            # Create text evidence for suspicious messages without files
+            if text and detection and detection.get("score", 0) >= 7.0:
+                created = self.create_text_evidence(
+                    text,
+                    source="telegram",
+                    telegram={"messageId": str(message_id), "chatId": str(chat_id), "timestamp": timestamp},
+                )
+                evidence_id = created["evidence"]["evidenceId"]
+                activity.append(created["activity"])
             event = self._write_telegram_event(
                 {
                     "eventId": telegram_event_id(chat_id, message_id),
                     "messageId": str(message_id),
                     "chatId": str(chat_id),
                     "timestamp": timestamp,
-                    "evidenceId": None,
+                    "evidenceId": evidence_id,
                     "text": text,
                     "filename": None,
                     "fileType": None,
                     "receivedAt": utc_now(),
                 }
             )
-            return {"telegramEvent": event, "evidence": None, "activity": [], "duplicate": False}
+            return {"telegramEvent": event, "evidence": self.get_evidence_by_id(evidence_id) if evidence_id else None, "activity": activity, "duplicate": False}
 
         created = self.create_evidence(
             file,
@@ -535,6 +547,86 @@ class EvidenceStore:
             if event.get("chatId") == normalized_chat_id and event.get("messageId") == normalized_message_id:
                 return event
         return None
+
+    # ------------------------------------------------------------------
+    # Monitored groups (multi-group monitoring)
+    # ------------------------------------------------------------------
+    def list_monitored_groups(self) -> list[JsonObject]:
+        return self._read_json_dir("monitored-groups")
+
+    def is_monitored_group(self, chat_id: str) -> bool:
+        return any(
+            str(g.get("chatId")) == str(chat_id) and g.get("isActive") is not False
+            for g in self.list_monitored_groups()
+        )
+
+    def add_monitored_group(self, chat_id: str, name: str | None = None, added_by: str | None = None) -> JsonObject:
+        self.ensure_storage()
+        existing = self._read_json_file("monitored-groups", f"{chat_id}.json")
+        if existing and existing.get("isActive") is not False:
+            return {"group": existing, "created": False, "message": "Group already monitored."}
+        group = {
+            "chatId": str(chat_id),
+            "name": name or str(chat_id),
+            "addedBy": added_by,
+            "addedAt": utc_now(),
+            "isActive": True,
+        }
+        self._write_json("monitored-groups", f"{chat_id}.json", group)
+        return {"group": group, "created": True}
+
+    def remove_monitored_group(self, chat_id: str) -> JsonObject:
+        existing = self._read_json_file("monitored-groups", f"{chat_id}.json")
+        if not existing:
+            return {"message": "Group not found."}
+        existing["isActive"] = False
+        existing["removedAt"] = utc_now()
+        self._write_json("monitored-groups", f"{chat_id}.json", existing)
+        return {"message": "Group removed from monitoring.", "group": existing}
+
+    # ------------------------------------------------------------------
+    # Text-only evidence (for suspicious messages without files)
+    # ------------------------------------------------------------------
+    def create_text_evidence(self, text: str, *, source: str = "telegram", telegram: JsonObject | None = None) -> JsonObject:
+        self.ensure_storage()
+        evidence_id = self._next_evidence_id()
+        stored_filename = f"{evidence_id}.txt"
+        uploaded_at = utc_now()
+        # Store text as a .txt file to fit the existing pipeline
+        self._write_file_bytes(stored_filename, text.encode("utf-8"), "text/plain")
+        record = {
+            "evidenceId": evidence_id,
+            "filename": stored_filename,
+            "fileType": "text/plain",
+            "source": source,
+            "uploadedAt": uploaded_at,
+            "status": "detected",
+            "riskLevel": "unknown",
+            "telegramMessageId": (telegram or {}).get("messageId"),
+            "telegramChatId": (telegram or {}).get("chatId"),
+            "telegramTimestamp": (telegram or {}).get("timestamp"),
+            "ocrStatus": "not-applicable",
+            "ocrText": text,
+            "ocrConfidence": None,
+            "ocrProcessingTimeMs": None,
+            "analysisStartedAt": None,
+            "analysisCompletedAt": None,
+            "storageId": evidence_id,
+            "originalFilename": stored_filename,
+            "storedFilename": stored_filename,
+            "storedAt": uploaded_at,
+        }
+        self._write_stored_record(record)
+        activity = self.record_activity(
+            {
+                "type": "text-evidence-created",
+                "title": "Suspicious Text Detected",
+                "evidenceId": evidence_id,
+                "timestamp": uploaded_at,
+                "detail": text[:120],
+            }
+        )
+        return {"evidence": self._to_evidence_record(record), "activity": activity}
 
     def run_attribution_for_evidence(self, evidence_id: str, ocr_text: str, ocr_confidence: int | None) -> JsonObject:
         now = utc_now()

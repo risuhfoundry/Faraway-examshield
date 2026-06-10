@@ -29,6 +29,7 @@ class Settings:
     telegram_bot_token: str
     telegram_webhook_secret: str
     telegram_chat_id: str
+    telegram_admin_chat_id: str
 
 
 def load_settings() -> Settings:
@@ -94,9 +95,10 @@ def load_settings() -> Settings:
         supabase_document_table=os.environ.get("EXAMSHIELD_SUPABASE_DOCUMENT_TABLE", "examshield_documents"),
         supabase_storage_bucket=os.environ.get("EXAMSHIELD_SUPABASE_STORAGE_BUCKET", "evidence-files"),
         public_url=(os.environ.get("EXAMSHIELD_PUBLIC_URL") or "").rstrip("/"),
-        telegram_bot_token=(os.environ.get("TELEGRAM_BOT_TOKEN") or "").strip(),
+               telegram_bot_token=(os.environ.get("TELEGRAM_BOT_TOKEN") or "").strip(),
         telegram_webhook_secret=(os.environ.get("TELEGRAM_WEBHOOK_SECRET") or "").strip(),
         telegram_chat_id=(os.environ.get("TELEGRAM_CHAT_ID") or "").strip(),
+        telegram_admin_chat_id=(os.environ.get("TELEGRAM_ADMIN_CHAT_ID") or "").strip(),
     )
 
 

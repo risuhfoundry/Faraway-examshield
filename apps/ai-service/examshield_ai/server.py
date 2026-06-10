@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from .detect import is_suspicious, scan_text
 from .events import sse_bytes
 from .llm import NvidiaClient
 from .ocr import SUPPORTED_TYPES, analyze_image
@@ -65,6 +66,10 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
         if path == "/alerts":
             self._send_json({"alerts": self.store.list_evidence()["alerts"]})
             return
+        # Monitored Telegram groups
+        if path == "/telegram/groups":
+            self._send_json({"groups": self.store.list_monitored_groups()})
+            return
         self._send_json({"error": "Not found"}, status=404)
 
     def do_POST(self) -> None:
@@ -89,6 +94,9 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
             return
         if path == "/telegram/webhook":
             self._ingest_telegram_webhook()
+            return
+        if path == "/telegram/groups":
+            self._add_monitored_group()
             return
         if path == "/demo/reset":
             self._send_json(self.store.reset_demo_environment())
@@ -214,6 +222,7 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                 timestamp=timestamp,
                 text=text,
                 file=uploaded,
+                detection=scan_text(text),
             )
             if created["duplicate"]:
                 self._send_json(
@@ -232,8 +241,30 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                         "telegramEvent": created["telegramEvent"],
                         "evidence": None,
                         "activity": created["activity"],
+                        "detection": {
+                            "score": scan_text(text)["score"],
+                            "categories": scan_text(text)["categories"],
+                            "isSuspicious": is_suspicious(scan_text(text)),
+                        },
                     },
                     status=202,
+                )
+                return
+            # Skip OCR analysis for text-only evidence (fileType text/plain)
+            if created["evidence"].get("fileType") == "text/plain":
+                self._send_json(
+                    {
+                        "message": "Suspicious Text Captured",
+                        "telegramEvent": created["telegramEvent"],
+                        "evidence": created["evidence"],
+                        "detection": {
+                            "score": scan_text(text)["score"],
+                            "categories": scan_text(text)["categories"],
+                            "isSuspicious": is_suspicious(scan_text(text)),
+                        },
+                        "activity": created["activity"],
+                    },
+                    status=201,
                 )
                 return
             queued = self.store.create_analysis_job(created["evidence"]["evidenceId"])
@@ -380,6 +411,34 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def do_DELETE(self) -> None:
+        path = urlparse(self.path).path
+        parts = [part for part in path.split("/") if part]
+        if len(parts) == 3 and parts[0] == "telegram" and parts[1] == "groups":
+            self._remove_monitored_group(parts[2])
+            return
+        self._send_json({"error": "Not found"}, status=404)
+
+    def _add_monitored_group(self) -> None:
+        try:
+            payload = self._read_json()
+            chat_id = str(payload.get("chatId") or "").strip()
+            if not chat_id:
+                self._send_json({"error": "chatId is required."}, status=400)
+                return
+            name = optional_text(payload.get("name")) or str(chat_id)
+            result = self.store.add_monitored_group(chat_id, name=name, added_by="api")
+            self._send_json(result, status=201 if result.get("created") else 200)
+        except Exception as exc:
+            self._send_json({"error": str(exc) or "Failed to add group."}, status=400)
+
+    def _remove_monitored_group(self, chat_id: str) -> None:
+        try:
+            result = self.store.remove_monitored_group(chat_id)
+            self._send_json(result)
+        except Exception as exc:
+            self._send_json({"error": str(exc) or "Failed to remove group."}, status=400)
 
     def _send_empty(self, status: int) -> None:
         self.send_response(status)
