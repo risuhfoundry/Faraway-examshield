@@ -39,6 +39,9 @@ __pycache__/
 # Vercel
 .vercel
 
+# Credentials
+cred.txt
+
 # Generated seed data (regenerable via `npm run seed`)
 apps/core/data/*.json
 !apps/core/data/.gitkeep
