@@ -38,6 +38,17 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
     def do_OPTIONS(self) -> None:
         self._send_empty(204)
 
+    def do_HEAD(self) -> None:
+        path = urlparse(self.path).path
+        if path == "/health":
+            self.send_response(200)
+            self._cors_headers()
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            return
+        self.send_response(404)
+        self.end_headers()
+
     def do_GET(self) -> None:
         path = urlparse(self.path).path
         parts = [part for part in path.split("/") if part]
