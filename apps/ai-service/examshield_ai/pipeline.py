@@ -112,6 +112,37 @@ class EvidencePipeline:
         )
         logger.info("Queued OCR job %s for evidence %s", job_id, evidence_id)
 
+    def recover_interrupted_jobs(self, ocr_runner: OcrRunner) -> int:
+        """Re-submit OCR jobs that were mid-flight when the service restarted."""
+        jobs = self.store.reset_interrupted_processing_jobs()
+        recovered = 0
+        for job in jobs:
+            job_id = str(job["jobId"])
+            evidence_id = str(job["evidenceId"])
+
+            def on_complete(
+                _analysis: JsonObject,
+                error: Exception | None,
+                *,
+                recovered_job_id: str = job_id,
+            ) -> None:
+                if not error:
+                    return
+                try:
+                    self.store.fail_analysis_job(recovered_job_id, str(error) or "Background OCR failed")
+                except Exception as fail_exc:
+                    logger.error("Failed to mark recovered job %s failed: %s", recovered_job_id, fail_exc)
+
+            if self.workers.submit(
+                self.store,
+                AnalysisTask(job_id=job_id, evidence_id=evidence_id),
+                ocr_runner,
+                on_complete=on_complete,
+            ):
+                recovered += 1
+                logger.info("Recovered OCR job %s for evidence %s", job_id, evidence_id)
+        return recovered
+
     def process_text_only_alert(
         self,
         created: JsonObject,

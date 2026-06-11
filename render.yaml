@@ -50,6 +50,8 @@ services:
         value: "0"
       - key: PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT
         value: "0"
+      - key: EXAMSHIELD_PADDLE_USE_ANGLE_CLS
+        value: "0"
       - key: EXAMSHIELD_PADDLE_LANG
         value: en
       - key: EXAMSHIELD_OCR_MAX_RETRIES
@@ -69,7 +71,7 @@ services:
       - key: EXAMSHIELD_STALE_JOB_SWEEP_SECONDS
         value: "60"
       - key: EXAMSHIELD_STALE_JOB_MAX_AGE_SECONDS
-        value: "180"
+        value: "300"
       - key: EXAMSHIELD_AI_PLANNER_MODEL
         value: mistralai/ministral-14b-instruct-2512
       - key: EXAMSHIELD_AI_MODEL

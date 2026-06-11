@@ -254,6 +254,33 @@ class EvidenceStore:
                     return job
         return None
 
+    def reset_interrupted_processing_jobs(self) -> list[JsonObject]:
+        """Move jobs left in processing after a deploy/restart back to queued."""
+        reset_jobs: list[JsonObject] = []
+        for job in self._read_json_dir("jobs"):
+            if job.get("status") != "processing":
+                continue
+            job_id = str(job["jobId"])
+            evidence_id = str(job["evidenceId"])
+            logger.info(
+                "Resetting interrupted job %s for evidence %s back to queued",
+                job_id,
+                evidence_id,
+            )
+            updated = {**job, "status": "queued", "startedAt": None, "error": None}
+            self._write_json("jobs", f"{job_id}.json", updated)
+            self._update_evidence_record(
+                evidence_id,
+                lambda record: {
+                    **record,
+                    "status": "pending",
+                    "ocrStatus": "queued",
+                    "analysisStartedAt": None,
+                },
+            )
+            reset_jobs.append(updated)
+        return reset_jobs
+
     def cleanup_stale_jobs(self, max_age_seconds: int = 300) -> int:
         """Clean up jobs stuck in 'processing' or 'queued' state for too long.
         

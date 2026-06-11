@@ -23,7 +23,7 @@ _paddle_warmup_done = False
 PADDLE_LANG = os.environ.get("EXAMSHIELD_PADDLE_LANG", "en").strip() or "en"
 PADDLE_DET_MODEL = os.environ.get("EXAMSHIELD_PADDLE_DET_MODEL", "PP-OCRv5_mobile_det").strip()
 PADDLE_REC_MODEL = os.environ.get("EXAMSHIELD_PADDLE_REC_MODEL", "PP-OCRv5_mobile_rec").strip()
-PADDLE_USE_ANGLE_CLS = os.environ.get("EXAMSHIELD_PADDLE_USE_ANGLE_CLS", "1").strip().lower() in {
+PADDLE_USE_ANGLE_CLS = os.environ.get("EXAMSHIELD_PADDLE_USE_ANGLE_CLS", "0").strip().lower() in {
     "1",
     "true",
     "yes",
@@ -198,9 +198,16 @@ def _create_paddle_engine() -> Any:
     _apply_mkldnn_setting(fallback, params)
     attempts.append(fallback)
 
+    accepts_kwargs = any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in inspect.signature(PaddleOCR.__init__).parameters.values()
+    )
     errors: list[str] = []
     for attempt in attempts:
-        filtered = {key: value for key, value in attempt.items() if key in params}
+        if accepts_kwargs:
+            filtered = {key: value for key, value in attempt.items() if value is not None}
+        else:
+            filtered = {key: value for key, value in attempt.items() if key in params}
         try:
             engine = PaddleOCR(**filtered)
             logger.info("PaddleOCR init kwargs: %s", sorted(filtered))

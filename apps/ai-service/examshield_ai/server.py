@@ -617,6 +617,29 @@ def build_handler(settings: Settings):
     return ConfiguredExamshieldAiHandler
 
 
+def _start_paddle_warmup_async() -> None:
+    ocr_chain = os.environ.get("EXAMSHIELD_OCR_CHAIN", "paddle,tesseract").lower()
+    if "paddle" not in ocr_chain:
+        return
+
+    def run() -> None:
+        try:
+            from .paddle_ocr import PADDLE_WARMUP_ENABLED, warmup_paddle_engine
+
+            if not PADDLE_WARMUP_ENABLED:
+                return
+            if warmup_paddle_engine():
+                logger.info("PaddleOCR engine warmed on startup")
+            else:
+                logger.warning(
+                    "PaddleOCR warmup did not complete; first OCR job may download models"
+                )
+        except Exception as exc:
+            logger.warning("PaddleOCR warmup skipped: %s", exc)
+
+    threading.Thread(target=run, daemon=True, name="paddle-warmup").start()
+
+
 def _start_stale_job_sweeper(store: EvidenceStore) -> None:
     interval_seconds = int(os.environ.get("EXAMSHIELD_STALE_JOB_SWEEP_SECONDS", "60"))
     max_age_seconds = int(os.environ.get("EXAMSHIELD_STALE_JOB_MAX_AGE_SECONDS", "120"))
@@ -657,23 +680,16 @@ def main() -> None:
         logger.info("Evidence cache warmed on startup")
     except Exception as exc:
         logger.warning("Evidence cache warmup skipped: %s", exc)
-    ocr_chain = os.environ.get("EXAMSHIELD_OCR_CHAIN", "paddle,tesseract").lower()
-    if "paddle" in ocr_chain:
-        try:
-            from .paddle_ocr import PADDLE_WARMUP_ENABLED, warmup_paddle_engine
-
-            if PADDLE_WARMUP_ENABLED:
-                if warmup_paddle_engine():
-                    logger.info("PaddleOCR engine warmed on startup")
-                else:
-                    logger.warning(
-                        "PaddleOCR warmup did not complete; first OCR job may download models"
-                    )
-        except Exception as exc:
-            logger.warning("PaddleOCR warmup skipped: %s", exc)
     _start_stale_job_sweeper(handler.store)
     server = ThreadingHTTPServer((settings.host, settings.port), handler)
     logger.info(f"EXAMSHIELD AI service listening on http://{settings.host}:{settings.port}")
+    _start_paddle_warmup_async()
+    try:
+        recovered = handler.pipeline.recover_interrupted_jobs(analyze_image)
+        if recovered:
+            logger.info("Re-queued %s interrupted OCR job(s) after restart", recovered)
+    except Exception as exc:
+        logger.warning("Interrupted job recovery skipped: %s", exc)
     server.serve_forever()
 
 
