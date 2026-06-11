@@ -451,8 +451,15 @@ class EvidenceStore:
         if not evidence:
             raise LookupError("Evidence not found.")
         bundle = self.get_bundle(evidence_id) or {"evidence": evidence}
+        status = str(job.get("status") or "")
+        if status == "completed":
+            message = "Analysis Complete"
+        elif status == "failed":
+            message = "Analysis Failed"
+        else:
+            message = "Analysis In Progress"
         return {
-            "message": "Analysis Complete" if job.get("status") == "completed" else "Analysis In Progress",
+            "message": message,
             "evidence": evidence,
             "job": job,
             "attribution": bundle.get("attribution"),

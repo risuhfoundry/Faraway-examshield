@@ -35,6 +35,7 @@ import {
   formatEvidenceTime,
   formatOcrStatus,
 } from "@/lib/evidence-format";
+import { parseJsonResponse, waitForAnalysisJob } from "@/lib/analysis-client";
 import { cn } from "@/lib/utils";
 
 const acceptedTypes = ["image/jpeg", "image/png", "application/pdf"];
@@ -153,7 +154,7 @@ export default function InvestigationWorkspace() {
         method: "POST",
         body: formData,
       });
-      const payload = (await response.json()) as EvidenceUploadResponse | { error: string };
+      const payload = await parseJsonResponse<EvidenceUploadResponse | { error: string }>(response);
 
       if (!response.ok) {
         throw new Error("error" in payload ? payload.error : "Evidence upload failed.");
@@ -189,27 +190,25 @@ export default function InvestigationWorkspace() {
       const queuedResponse = await fetch("/analysis/jobs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ evidenceId }),
+        body: JSON.stringify({ evidenceId, async: true }),
       });
-      const queuedPayload = (await queuedResponse.json()) as AnalysisJobResponse | { error: string };
+      const queuedPayload = await parseJsonResponse<AnalysisJobResponse | { error: string }>(
+        queuedResponse,
+      );
 
-      if (!queuedResponse.ok || "error" in queuedPayload) {
+      if (
+        (!queuedResponse.ok && queuedResponse.status !== 202) ||
+        "error" in queuedPayload
+      ) {
         throw new Error("error" in queuedPayload ? queuedPayload.error : "Analysis queue failed.");
       }
 
       await loadEvidence();
 
-      const processResponse = await fetch(`/analysis/jobs/${queuedPayload.job.jobId}/process`, {
-        method: "POST",
-      });
-      const processPayload = (await processResponse.json()) as AnalysisJobResponse | { error: string };
-
-      if (!processResponse.ok || "error" in processPayload) {
-        throw new Error("error" in processPayload ? processPayload.error : "Analysis failed.");
-      }
+      const processPayload = await waitForAnalysisJob(queuedPayload.job.jobId);
 
       await loadEvidence();
-      if (processPayload.message === "Analysis Failed") {
+      if (processPayload.message === "Analysis Failed" || processPayload.job.status === "failed") {
         setActiveTab("OCR Results");
         setWorkflowStage(null);
         return;

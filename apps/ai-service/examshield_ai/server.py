@@ -25,7 +25,7 @@ from .settings import Settings, load_settings
 from .store import EvidenceStore, UploadedFile, normalize_telegram_timestamp
 from .telegram import TelegramWebhook
 from .tools import ExamshieldToolRegistry
-from .workers import AnalysisWorkerPool
+from .workers import AnalysisTask, AnalysisWorkerPool
 
 logging.basicConfig(
     level=logging.INFO,
@@ -107,6 +107,12 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
             return
         if path == "/telegram/status":
             self._get_telegram_status()
+            return
+        if len(parts) == 3 and parts[0] == "analysis" and parts[1] == "jobs":
+            try:
+                self._send_json(self.store.analysis_job_snapshot(parts[2]))
+            except LookupError as exc:
+                self._send_json({"error": str(exc)}, status=404)
             return
         self._send_json({"error": "Not found"}, status=404)
 
@@ -260,6 +266,9 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
             if job.get("status") == "completed":
                 self._send_json(self.store.analysis_job_snapshot(job_id))
                 return
+            if job.get("status") == "failed":
+                self._send_json(self.store.analysis_job_snapshot(job_id))
+                return
             if job.get("status") == "processing" or self.workers.is_job_active(job_id):
                 snapshot = self.store.analysis_job_snapshot(job_id)
                 snapshot["message"] = "Analysis In Progress"
@@ -273,7 +282,29 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                 self._send_json(snapshot, status=202)
                 return
 
-            self._send_json(self.store.run_analysis_job(job_id, analyze_image))
+            def on_complete(_analysis: dict[str, Any], error: Exception | None) -> None:
+                if not error:
+                    return
+                try:
+                    self.store.fail_analysis_job(job_id, str(error) or "Background OCR failed")
+                except Exception as fail_exc:
+                    logger.error("Failed to mark job %s failed: %s", job_id, fail_exc)
+
+            submitted = self.workers.submit(
+                self.store,
+                AnalysisTask(job_id=job_id, evidence_id=evidence_id),
+                analyze_image,
+                on_complete=on_complete,
+            )
+            if submitted is None:
+                snapshot = self.store.analysis_job_snapshot(job_id)
+                snapshot["message"] = "Analysis In Progress"
+                self._send_json(snapshot, status=202)
+                return
+
+            snapshot = self.store.analysis_job_snapshot(job_id)
+            snapshot["message"] = "Analysis In Progress"
+            self._send_json(snapshot, status=202)
         except LookupError as exc:
             self._send_json({"error": str(exc)}, status=404)
         except Exception as exc:
