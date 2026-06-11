@@ -12,6 +12,7 @@ from examshield_ai.ocr import (
     normalize_text,
     normalize_token,
     read_ocr_candidates_parallel,
+    read_ocr_candidates_sequential,
     score_ocr_quality,
 )
 
@@ -85,8 +86,31 @@ class TestParallelPsm:
         assert len(passed) == 2
 
 
+class TestSequentialPsm:
+    def test_read_ocr_candidates_sequential_stops_on_quality(self, tmp_path: Path):
+        image_path = tmp_path / "sample.jpg"
+        image_path.write_bytes(b"fake-image")
+        calls: list[str] = []
+
+        def fake_candidate(path: Path, psm: str) -> dict:
+            calls.append(psm)
+            return {
+                "status": "completed",
+                "psm": psm,
+                "text": f"text-{psm}",
+                "confidence": 80,
+                "qualityScore": 80 if psm == "6" else 20,
+            }
+
+        with patch("examshield_ai.ocr.read_ocr_candidate", side_effect=fake_candidate):
+            candidates = read_ocr_candidates_sequential(image_path)
+
+        assert calls == ["6"]
+        assert len(candidates) == 1
+
+
 class TestAnalyzeImage:
-    def test_analyze_image_picks_best_parallel_candidate(self):
+    def test_analyze_image_picks_best_candidate(self):
         candidates = [
             {"status": "completed", "psm": "6", "text": "low", "confidence": 40, "qualityScore": 40},
             {"status": "completed", "psm": "4", "text": "best text", "confidence": 90, "qualityScore": 92},
@@ -94,7 +118,7 @@ class TestAnalyzeImage:
         ]
 
         with patch("examshield_ai.ocr.write_temp_image", return_value=Path("/tmp/x.jpg")), patch(
-            "examshield_ai.ocr.read_ocr_candidates_parallel", return_value=candidates
+            "examshield_ai.ocr.read_ocr_candidates", return_value=candidates
         ), patch("pathlib.Path.unlink"):
             result = analyze_image(b"img", ".jpg")
 
@@ -110,7 +134,7 @@ class TestAnalyzeImage:
         ]
 
         with patch("examshield_ai.ocr.write_temp_image", return_value=Path("/tmp/x.jpg")), patch(
-            "examshield_ai.ocr.read_ocr_candidates_parallel", return_value=candidates
+            "examshield_ai.ocr.read_ocr_candidates", return_value=candidates
         ), patch("examshield_ai.ocr.OCR_MAX_RETRIES", 1), patch("pathlib.Path.unlink"):
             result = analyze_image(b"img", ".jpg")
 

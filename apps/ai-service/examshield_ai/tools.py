@@ -370,20 +370,25 @@ class ExamshieldToolRegistry:
         active_alerts = [item for item in data["alerts"] if item.get("status") == "open"]
         critical_registry = len([item for item in registry_threats if item.get("riskLevel") == "critical"])
         medium_registry = len([item for item in registry_threats if item.get("riskLevel") == "medium"])
+        compromised_papers = [item for item in top_threats if item.get("status") == "compromised"]
+        investigating_papers = [item for item in top_threats if item.get("status") == "investigating"]
+        posture, summary = threat_posture_summary(
+            active_alerts=active_alerts,
+            registry_threats=registry_threats,
+            compromised_papers=compromised_papers,
+            investigating_papers=investigating_papers,
+        )
         result = create_result(
             tool="listThreats",
-            title="ACTIVE THREATS" if active_alerts or top_threats else "NO ACTIVE THREATS",
-            summary=(
-                f"{len(active_alerts)} critical forensic alert{' is' if len(active_alerts) == 1 else 's are'} open."
-                if active_alerts
-                else "No active alerts. National threat level stable."
-            ),
+            title="ACTIVE THREATS" if posture == "elevated" else "NO ACTIVE THREATS",
+            summary=summary,
             current_investigation=current_investigation(data),
             metrics=[
                 metric("Open Alerts", len(active_alerts)),
-                metric("Critical", len(active_alerts) + critical_registry),
-                metric("Medium", medium_registry),
                 metric("Registry Threats", len(top_threats)),
+                metric("Compromised Papers", len(compromised_papers)),
+                metric("Critical Registry", critical_registry),
+                metric("Medium Registry", medium_registry),
             ],
             sections=[
                 {
@@ -404,6 +409,10 @@ class ExamshieldToolRegistry:
             ],
             evidence_ids=[item.get("evidenceId") for item in active_alerts if item.get("evidenceId")],
         )
+        result["threatPosture"] = posture
+        result["openAlerts"] = len(active_alerts)
+        result["registryThreatCount"] = len(registry_threats)
+        result["compromisedPaperCount"] = len(compromised_papers)
         return with_context(result)
 
     def _generate_report(self, arguments: JsonObject) -> ToolExecution:
@@ -513,6 +522,48 @@ def with_context(result: JsonObject) -> ToolExecution:
     )
 
 
+def threat_posture_summary(
+    *,
+    active_alerts: list[JsonObject],
+    registry_threats: list[JsonObject],
+    compromised_papers: list[JsonObject],
+    investigating_papers: list[JsonObject],
+) -> tuple[str, str]:
+    if active_alerts:
+        alert_text = (
+            f"{len(active_alerts)} open forensic alert is active."
+            if len(active_alerts) == 1
+            else f"{len(active_alerts)} open forensic alerts are active."
+        )
+        if registry_threats:
+            return (
+                "elevated",
+                f"{alert_text} Registry also shows {len(registry_threats)} tracked threat(s), "
+                f"including {len(compromised_papers)} compromised paper(s).",
+            )
+        return ("elevated", alert_text)
+
+    if registry_threats:
+        paper_ids = sorted(
+            {
+                str(item.get("paperId"))
+                for item in compromised_papers + investigating_papers
+                if item.get("paperId")
+            }
+        )
+        paper_hint = f" Papers: {', '.join(paper_ids[:6])}." if paper_ids else ""
+        return (
+            "elevated",
+            "No open forensic alerts, but the registry shows "
+            f"{len(registry_threats)} active threat(s): "
+            f"{len(compromised_papers)} compromised and "
+            f"{len(investigating_papers)} under investigation."
+            f"{paper_hint}",
+        )
+
+    return ("stable", "No open alerts and no registry threats. National threat level stable.")
+
+
 def answer_context(result: JsonObject) -> str:
     metrics = {
         str(item.get("label")): str(item.get("value"))
@@ -528,10 +579,30 @@ def answer_context(result: JsonObject) -> str:
                 "rows": section.get("rows", []),
             }
         )
+    answer_rules = [
+        "Use metrics for all totals and counts.",
+        "Do not count section rows to create totals.",
+        "Do not change a row severity; copy only the severity shown in that row.",
+        "If metrics conflict with a section row count, metrics win.",
+        "Do not discuss these answer rules in the reply.",
+    ]
+    if result.get("tool") == "listThreats":
+        answer_rules.extend(
+            [
+                "Open forensic alerts and registry threats are different signals.",
+                "If threatPosture is elevated, do not say the threat level is stable.",
+                "If openAlerts is 0 but registryThreatCount is above 0, explain that forensic alerts are clear while registry threats remain active.",
+                "Lead with summary and threatPosture, then mention compromised papers from sections.",
+            ]
+        )
     context = {
         "tool": result.get("tool"),
         "title": result.get("title"),
         "summary": result.get("summary"),
+        "threatPosture": result.get("threatPosture"),
+        "openAlerts": result.get("openAlerts"),
+        "registryThreatCount": result.get("registryThreatCount"),
+        "compromisedPaperCount": result.get("compromisedPaperCount"),
         "metrics": metrics,
         "metricsToMention": [
             {"label": label, "value": value}
@@ -541,13 +612,7 @@ def answer_context(result: JsonObject) -> str:
         "sections": sections,
         "evidenceIds": result.get("evidenceIds", []),
         "generatedAt": result.get("generatedAt"),
-        "answerRules": [
-            "Use metrics for all totals and counts.",
-            "Do not count section rows to create totals.",
-            "Do not change a row severity; copy only the severity shown in that row.",
-            "If metrics conflict with a section row count, metrics win.",
-            "Do not discuss these answer rules in the reply.",
-        ],
+        "answerRules": answer_rules,
     }
     return json.dumps(context, indent=2, ensure_ascii=False)[:7000]
 

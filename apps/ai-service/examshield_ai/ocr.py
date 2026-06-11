@@ -16,10 +16,19 @@ SUPPORTED_TYPES = {
     "image/jpeg": ".jpg",
     "image/png": ".png",
 }
-OCR_PSMS = ("6", "4", "11")
-OCR_TIMEOUT_SECONDS = int(os.environ.get("EXAMSHIELD_OCR_TIMEOUT", "15"))
-OCR_MAX_RETRIES = int(os.environ.get("EXAMSHIELD_OCR_MAX_RETRIES", "1"))
+
+
+def _split_csv(value: str, default: str) -> tuple[str, ...]:
+    raw = (value or default).strip()
+    return tuple(item.strip() for item in raw.split(",") if item.strip())
+
+
+OCR_PSMS = _split_csv(os.environ.get("EXAMSHIELD_OCR_PSMS", ""), "6,4,11")
+OCR_TIMEOUT_SECONDS = int(os.environ.get("EXAMSHIELD_OCR_TIMEOUT", "45"))
+OCR_MAX_RETRIES = int(os.environ.get("EXAMSHIELD_OCR_MAX_RETRIES", "2"))
 OCR_PSM_WORKERS = int(os.environ.get("EXAMSHIELD_OCR_PSM_WORKERS", str(len(OCR_PSMS))))
+OCR_MODE = os.environ.get("EXAMSHIELD_OCR_MODE", "sequential").strip().lower()
+OCR_MIN_QUALITY = int(os.environ.get("EXAMSHIELD_OCR_MIN_QUALITY", "35"))
 
 
 def analyze_image(image_bytes: bytes, suffix: str) -> dict[str, Any]:
@@ -28,7 +37,7 @@ def analyze_image(image_bytes: bytes, suffix: str) -> dict[str, Any]:
 
     try:
         for attempt in range(OCR_MAX_RETRIES + 1):
-            candidates = read_ocr_candidates_parallel(temp_path)
+            candidates = read_ocr_candidates(temp_path)
             failed = [candidate for candidate in candidates if candidate["status"] == "failed"]
             passed = [candidate for candidate in candidates if candidate["status"] == "completed"]
 
@@ -37,7 +46,7 @@ def analyze_image(image_bytes: bytes, suffix: str) -> dict[str, Any]:
                 raw_text = str(best["text"])
                 confidence = int(best["confidence"])
 
-                logger.info(f"OCR attempt {attempt + 1} succeeded with PSM {best['psm']}")
+                logger.info("OCR attempt %s succeeded with PSM %s", attempt + 1, best["psm"])
                 return {
                     "status": "completed",
                     "confidence": confidence if raw_text else 0,
@@ -46,13 +55,16 @@ def analyze_image(image_bytes: bytes, suffix: str) -> dict[str, Any]:
                     "message": "Text extracted" if raw_text else "No Exam Content Detected",
                     "qualityScore": int(best["qualityScore"]),
                 }
-            
-            if attempt < OCR_MAX_RETRIES:
-                logger.warning(f"OCR attempt {attempt + 1} failed, retrying... Errors: {[f.get('error') for f in failed]}")
 
-        # All attempts failed
+            if attempt < OCR_MAX_RETRIES:
+                logger.warning(
+                    "OCR attempt %s failed, retrying... Errors: %s",
+                    attempt + 1,
+                    [item.get("error") for item in failed],
+                )
+
         error = failed[0].get("error") if failed else "OCR failed."
-        logger.error(f"OCR failed after {OCR_MAX_RETRIES + 1} attempts: {error}")
+        logger.error("OCR failed after %s attempts: %s", OCR_MAX_RETRIES + 1, error)
         return failed_result(str(error), started)
     except FileNotFoundError:
         return failed_result("Tesseract executable was not found.", started)
@@ -83,6 +95,47 @@ def run_tesseract(image_path: Path, args: list[str]) -> subprocess.CompletedProc
     )
 
 
+def read_ocr_candidates(image_path: Path) -> list[dict[str, Any]]:
+    if OCR_MODE == "parallel":
+        return read_ocr_candidates_parallel(image_path)
+    return read_ocr_candidates_sequential(image_path)
+
+
+def read_ocr_candidates_sequential(image_path: Path) -> list[dict[str, Any]]:
+    """Try PSM modes fastest-first and stop once quality is acceptable."""
+    candidates: list[dict[str, Any]] = []
+    for psm in OCR_PSMS:
+        try:
+            candidate = read_ocr_candidate(image_path, psm)
+        except subprocess.TimeoutExpired:
+            candidate = {
+                "status": "failed",
+                "psm": psm,
+                "text": "",
+                "confidence": 0,
+                "qualityScore": 0,
+                "error": f"PSM {psm} timed out after {OCR_TIMEOUT_SECONDS}s",
+            }
+        except Exception as exc:
+            candidate = {
+                "status": "failed",
+                "psm": psm,
+                "text": "",
+                "confidence": 0,
+                "qualityScore": 0,
+                "error": f"PSM {psm} error: {exc}",
+            }
+
+        candidates.append(candidate)
+        if (
+            candidate.get("status") == "completed"
+            and candidate.get("text")
+            and int(candidate.get("qualityScore") or 0) >= OCR_MIN_QUALITY
+        ):
+            return candidates
+    return candidates
+
+
 def read_ocr_candidates_parallel(image_path: Path) -> list[dict[str, Any]]:
     """Run all configured PSM modes concurrently and return every candidate."""
     workers = max(1, min(OCR_PSM_WORKERS, len(OCR_PSMS)))
@@ -110,7 +163,7 @@ def read_ocr_candidates_parallel(image_path: Path) -> list[dict[str, Any]]:
                     "text": "",
                     "confidence": 0,
                     "qualityScore": 0,
-                    "error": f"PSM {psm} error: {str(exc)}",
+                    "error": f"PSM {psm} error: {exc}",
                 })
     return candidates
 
@@ -128,6 +181,22 @@ def read_ocr_candidate(image_path: Path, psm: str) -> dict[str, Any]:
         }
 
     raw_text = normalize_text(text_run.stdout)
+    if not raw_text:
+        return {
+            "status": "completed",
+            "psm": psm,
+            "text": "",
+            "confidence": 0,
+            "qualityScore": 0,
+            "quality": {
+                "wordCount": 0,
+                "meaningfulWordCount": 0,
+                "cleanRatio": 0,
+                "punctuationRatio": 0,
+                "shortLineRatio": 1,
+            },
+        }
+
     word_confidences, words = read_word_confidences(image_path, psm)
     confidence = round(sum(word_confidences) / len(word_confidences)) if word_confidences else 0
     quality_report = score_ocr_quality(raw_text, confidence, words)
