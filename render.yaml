@@ -44,6 +44,12 @@ services:
         value: PP-OCRv5_mobile_rec
       - key: EXAMSHIELD_PADDLE_WARMUP
         value: "1"
+      - key: EXAMSHIELD_PADDLE_ENABLE_MKLDNN
+        value: "0"
+      - key: FLAGS_use_mkldnn
+        value: "0"
+      - key: PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT
+        value: "0"
       - key: EXAMSHIELD_PADDLE_LANG
         value: en
       - key: EXAMSHIELD_OCR_MAX_RETRIES

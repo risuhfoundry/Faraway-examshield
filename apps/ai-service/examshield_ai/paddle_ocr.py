@@ -3,10 +3,15 @@ from __future__ import annotations
 import inspect
 import logging
 import os
+import tempfile
 import threading
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from pathlib import Path
 from typing import Any
+
+# PaddlePaddle 3.3+ can crash on CPU when OneDNN/PIR is enabled (Paddle#77340).
+os.environ.setdefault("FLAGS_use_mkldnn", "0")
+os.environ.setdefault("PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT", "0")
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +30,12 @@ PADDLE_USE_ANGLE_CLS = os.environ.get("EXAMSHIELD_PADDLE_USE_ANGLE_CLS", "1").st
     "on",
 }
 PADDLE_WARMUP_ENABLED = os.environ.get("EXAMSHIELD_PADDLE_WARMUP", "1").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+PADDLE_ENABLE_MKLDNN = os.environ.get("EXAMSHIELD_PADDLE_ENABLE_MKLDNN", "0").strip().lower() in {
     "1",
     "true",
     "yes",
@@ -57,6 +68,7 @@ def paddle_status() -> dict[str, Any]:
         "detModel": PADDLE_DET_MODEL or None,
         "recModel": PADDLE_REC_MODEL or None,
         "useAngleCls": PADDLE_USE_ANGLE_CLS,
+        "enableMkldnn": PADDLE_ENABLE_MKLDNN,
         "timeoutSeconds": PADDLE_TIMEOUT_SECONDS,
         "initTimeoutSeconds": PADDLE_INIT_TIMEOUT_SECONDS,
         "initError": _paddle_init_error,
@@ -82,7 +94,7 @@ def warmup_paddle_engine(timeout: int | None = None) -> bool:
     )
     try:
         with ThreadPoolExecutor(max_workers=1, thread_name_prefix="paddle-warmup") as executor:
-            future = executor.submit(get_paddle_engine)
+            future = executor.submit(_warmup_paddle_runtime)
             future.result(timeout=init_timeout)
         _paddle_warmup_done = True
         logger.info("PaddleOCR warmup complete")
@@ -117,6 +129,11 @@ def get_paddle_engine() -> Any:
             raise RuntimeError(_paddle_init_error) from exc
 
 
+def _apply_mkldnn_setting(kwargs: dict[str, Any], params: set[str]) -> None:
+    if "enable_mkldnn" in params:
+        kwargs["enable_mkldnn"] = PADDLE_ENABLE_MKLDNN
+
+
 def _paddle_init_kwargs(params: set[str]) -> dict[str, Any]:
     kwargs: dict[str, Any] = {}
     if "lang" in params:
@@ -133,7 +150,32 @@ def _paddle_init_kwargs(params: set[str]) -> dict[str, Any]:
         kwargs["use_doc_orientation_classify"] = False
     if "use_doc_unwarping" in params:
         kwargs["use_doc_unwarping"] = False
+    _apply_mkldnn_setting(kwargs, params)
     return kwargs
+
+
+def _warmup_paddle_runtime() -> None:
+    engine = get_paddle_engine()
+    image_path = _write_smoke_test_image()
+    try:
+        _run_paddle_engine(engine, image_path)
+    finally:
+        image_path.unlink(missing_ok=True)
+
+
+def _write_smoke_test_image() -> Path:
+    import cv2
+    import numpy as np
+
+    image = np.full((64, 160, 3), 255, dtype=np.uint8)
+    cv2.putText(image, "EXAMSHIELD", (8, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)
+    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
+    try:
+        if not cv2.imwrite(temp_file.name, image):
+            raise RuntimeError("Failed to write Paddle smoke-test image.")
+        return Path(temp_file.name)
+    finally:
+        temp_file.close()
 
 
 def _create_paddle_engine() -> Any:
@@ -143,17 +185,18 @@ def _create_paddle_engine() -> Any:
     attempts: list[dict[str, Any]] = [_paddle_init_kwargs(params)]
 
     if "use_gpu" in params:
-        attempts.append(
-            {
-                "lang": PADDLE_LANG,
-                "use_angle_cls": PADDLE_USE_ANGLE_CLS,
-                "use_gpu": False,
-                "show_log": False,
-                "enable_mkldnn": False,
-            }
-        )
+        legacy = {
+            "lang": PADDLE_LANG,
+            "use_angle_cls": PADDLE_USE_ANGLE_CLS,
+            "use_gpu": False,
+            "show_log": False,
+            "enable_mkldnn": PADDLE_ENABLE_MKLDNN,
+        }
+        attempts.append(legacy)
 
-    attempts.append({"lang": PADDLE_LANG})
+    fallback = {"lang": PADDLE_LANG}
+    _apply_mkldnn_setting(fallback, params)
+    attempts.append(fallback)
 
     errors: list[str] = []
     for attempt in attempts:
@@ -272,21 +315,24 @@ def _normalize_confidence(value: Any) -> float:
     return confidence * 100 if confidence <= 1 else confidence
 
 
+def _run_paddle_engine(engine: Any, image_path: Path) -> Any:
+    path = str(image_path)
+    if hasattr(engine, "predict"):
+        try:
+            return engine.predict(path)
+        except TypeError:
+            return engine.predict(input=path)
+    if hasattr(engine, "ocr"):
+        try:
+            return engine.ocr(path, cls=PADDLE_USE_ANGLE_CLS)
+        except TypeError:
+            return engine.ocr(path)
+    raise RuntimeError("PaddleOCR engine has no predict() or ocr() method.")
+
+
 def _invoke_paddle(image_path: Path, *, timeout: int) -> Any:
     def _call() -> Any:
-        engine = get_paddle_engine()
-        path = str(image_path)
-        if hasattr(engine, "predict"):
-            try:
-                return engine.predict(path)
-            except TypeError:
-                return engine.predict(input=path)
-        if hasattr(engine, "ocr"):
-            try:
-                return engine.ocr(path, cls=PADDLE_USE_ANGLE_CLS)
-            except TypeError:
-                return engine.ocr(path)
-        raise RuntimeError("PaddleOCR engine has no predict() or ocr() method.")
+        return _run_paddle_engine(get_paddle_engine(), image_path)
 
     with ThreadPoolExecutor(max_workers=1, thread_name_prefix="paddle-ocr") as executor:
         future = executor.submit(_call)
