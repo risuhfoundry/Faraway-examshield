@@ -17,7 +17,7 @@ from .chat import ChatSession
 from .detect import is_suspicious, scan_text
 from .events import sse_bytes
 from .llm import NvidiaClient
-from .ocr import SUPPORTED_TYPES, analyze_image
+from .ocr import SUPPORTED_TYPES, analyze_image, ocr_runtime_status
 from .pipeline import EvidencePipeline
 from .planner import ToolPlanner
 from .responses import conversation_messages, grounded_messages
@@ -71,6 +71,7 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                     "ocr": {
                         "endpoint": "/ocr/analyze",
                         "supportedTypes": sorted(SUPPORTED_TYPES.keys()),
+                        "runtime": ocr_runtime_status(),
                         "workers": self.workers.stats(),
                     },
                     "uploadRoot": str(self.settings.upload_root),

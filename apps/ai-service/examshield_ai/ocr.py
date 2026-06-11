@@ -20,16 +20,17 @@ SUPPORTED_TYPES = {
 
 def _split_csv(value: str, default: str) -> tuple[str, ...]:
     raw = (value or default).strip()
-    return tuple(item.strip() for item in raw.split(",") if item.strip())
+    return tuple(item.strip().lower() for item in raw.split(",") if item.strip())
 
 
 def _env_bool(name: str, default: str = "1") -> bool:
     return os.environ.get(name, default).strip().lower() in {"1", "true", "yes", "on"}
 
 
+OCR_CHAIN = _split_csv(os.environ.get("EXAMSHIELD_OCR_CHAIN", ""), "paddle,tesseract")
 OCR_PSMS = _split_csv(os.environ.get("EXAMSHIELD_OCR_PSMS", ""), "6,4")
 OCR_TIMEOUT_SECONDS = int(os.environ.get("EXAMSHIELD_OCR_TIMEOUT", "25"))
-OCR_TOTAL_BUDGET_SECONDS = int(os.environ.get("EXAMSHIELD_OCR_TOTAL_BUDGET_SECONDS", "75"))
+OCR_TOTAL_BUDGET_SECONDS = int(os.environ.get("EXAMSHIELD_OCR_TOTAL_BUDGET_SECONDS", "90"))
 OCR_MAX_RETRIES = int(os.environ.get("EXAMSHIELD_OCR_MAX_RETRIES", "0"))
 OCR_PSM_WORKERS = int(os.environ.get("EXAMSHIELD_OCR_PSM_WORKERS", str(len(OCR_PSMS))))
 OCR_MODE = os.environ.get("EXAMSHIELD_OCR_MODE", "sequential").strip().lower()
@@ -37,10 +38,26 @@ OCR_MIN_QUALITY = int(os.environ.get("EXAMSHIELD_OCR_MIN_QUALITY", "25"))
 OCR_FAST = _env_bool("EXAMSHIELD_OCR_FAST", "1")
 
 
+def ocr_runtime_status() -> dict[str, Any]:
+    from .paddle_ocr import paddle_status
+
+    return {
+        "chain": list(OCR_CHAIN),
+        "totalBudgetSeconds": OCR_TOTAL_BUDGET_SECONDS,
+        "tesseract": {
+            "psms": list(OCR_PSMS),
+            "mode": OCR_MODE,
+            "timeoutSeconds": OCR_TIMEOUT_SECONDS,
+        },
+        "paddle": paddle_status(),
+    }
+
+
 def analyze_image(image_bytes: bytes, suffix: str) -> dict[str, Any]:
     started = time.perf_counter()
     deadline = started + OCR_TOTAL_BUDGET_SECONDS
     temp_path = write_temp_image(image_bytes, suffix)
+    errors: list[str] = []
 
     try:
         for attempt in range(OCR_MAX_RETRIES + 1):
@@ -48,40 +65,56 @@ def analyze_image(image_bytes: bytes, suffix: str) -> dict[str, Any]:
                 logger.warning("OCR budget exhausted before attempt %s", attempt + 1)
                 break
 
-            candidates = read_ocr_candidates(temp_path, deadline=deadline)
-            failed = [candidate for candidate in candidates if candidate["status"] == "failed"]
-            passed = [candidate for candidate in candidates if candidate["status"] == "completed"]
+            for engine in OCR_CHAIN:
+                if time.perf_counter() >= deadline:
+                    errors.append(f"OCR budget exceeded ({OCR_TOTAL_BUDGET_SECONDS}s)")
+                    break
 
-            if passed:
-                best = max(passed, key=lambda candidate: candidate["qualityScore"])
-                raw_text = str(best["text"])
-                confidence = int(best["confidence"])
+                if engine == "paddle":
+                    from .paddle_ocr import run_paddle_ocr
 
-                logger.info(
-                    "OCR attempt %s succeeded with PSM %s in %sms",
-                    attempt + 1,
-                    best["psm"],
-                    elapsed_ms(started),
-                )
-                return {
-                    "status": "completed",
-                    "confidence": confidence if raw_text else 0,
-                    "text": raw_text,
-                    "processingTimeMs": elapsed_ms(started),
-                    "message": "Text extracted" if raw_text else "No Exam Content Detected",
-                    "qualityScore": int(best["qualityScore"]),
-                }
+                    candidate = run_paddle_ocr(
+                        temp_path,
+                        timeout=remaining_timeout(deadline, OCR_TIMEOUT_SECONDS),
+                    )
+                elif engine == "tesseract":
+                    candidate = run_tesseract_best_candidate(temp_path, deadline=deadline)
+                else:
+                    logger.warning("Unknown OCR engine in chain: %s", engine)
+                    continue
+
+                if candidate.get("status") == "failed":
+                    errors.append(str(candidate.get("error") or f"{engine} failed"))
+                    continue
+
+                raw_text = str(candidate.get("text") or "")
+                quality_score = int(candidate.get("qualityScore") or 0)
+                if raw_text and quality_score >= OCR_MIN_QUALITY:
+                    engine_name = str(candidate.get("engine") or engine)
+                    logger.info(
+                        "OCR succeeded with %s (quality=%s) in %sms",
+                        engine_name,
+                        quality_score,
+                        elapsed_ms(started),
+                    )
+                    return completed_result(candidate, started, engine_name)
+
+                if raw_text:
+                    logger.info(
+                        "%s returned low-quality text (score=%s); trying next engine",
+                        engine,
+                        quality_score,
+                    )
+                    errors.append(f"{engine} quality below threshold ({quality_score})")
+                else:
+                    errors.append(f"{engine} returned no text")
 
             if attempt < OCR_MAX_RETRIES:
-                logger.warning(
-                    "OCR attempt %s failed, retrying... Errors: %s",
-                    attempt + 1,
-                    [item.get("error") for item in failed],
-                )
+                logger.warning("OCR attempt %s exhausted chain, retrying", attempt + 1)
 
-        error = failed[0].get("error") if failed else f"OCR exceeded {OCR_TOTAL_BUDGET_SECONDS}s budget."
-        logger.error("OCR failed after %s attempts: %s", OCR_MAX_RETRIES + 1, error)
-        return failed_result(str(error), started)
+        error = errors[-1] if errors else f"OCR exceeded {OCR_TOTAL_BUDGET_SECONDS}s budget."
+        logger.error("OCR failed after chain %s: %s", ",".join(OCR_CHAIN), error)
+        return failed_result(error, started)
     except FileNotFoundError:
         return failed_result("Tesseract executable was not found.", started)
     except subprocess.TimeoutExpired:
@@ -91,6 +124,40 @@ def analyze_image(image_bytes: bytes, suffix: str) -> dict[str, Any]:
             temp_path.unlink(missing_ok=True)
         except OSError:
             pass
+
+
+def completed_result(candidate: dict[str, Any], started: float, engine_name: str) -> dict[str, Any]:
+    raw_text = str(candidate.get("text") or "")
+    confidence = int(candidate.get("confidence") or 0)
+    return {
+        "status": "completed",
+        "engine": engine_name,
+        "confidence": confidence if raw_text else 0,
+        "text": raw_text,
+        "processingTimeMs": elapsed_ms(started),
+        "message": "Text extracted" if raw_text else "No Exam Content Detected",
+        "qualityScore": int(candidate.get("qualityScore") or 0),
+    }
+
+
+def run_tesseract_best_candidate(image_path: Path, *, deadline: float | None) -> dict[str, Any]:
+    candidates = read_ocr_candidates(image_path, deadline=deadline)
+    passed = [candidate for candidate in candidates if candidate.get("status") == "completed"]
+    if not passed:
+        failed = [candidate for candidate in candidates if candidate.get("status") == "failed"]
+        error = failed[0].get("error") if failed else "Tesseract found no text."
+        return {
+            "status": "failed",
+            "engine": "tesseract",
+            "psm": failed[0].get("psm") if failed else "tesseract",
+            "text": "",
+            "confidence": 0,
+            "qualityScore": 0,
+            "error": str(error),
+        }
+
+    best = max(passed, key=lambda candidate: int(candidate.get("qualityScore") or 0))
+    return {**best, "engine": "tesseract"}
 
 
 def write_temp_image(image_bytes: bytes, suffix: str) -> Path:
@@ -136,12 +203,12 @@ def read_ocr_candidates_sequential(
     *,
     deadline: float | None = None,
 ) -> list[dict[str, Any]]:
-    """Try PSM modes fastest-first and stop once quality is acceptable."""
     candidates: list[dict[str, Any]] = []
     for psm in OCR_PSMS:
         if deadline and time.perf_counter() >= deadline:
             candidates.append({
                 "status": "failed",
+                "engine": "tesseract",
                 "psm": psm,
                 "text": "",
                 "confidence": 0,
@@ -156,6 +223,7 @@ def read_ocr_candidates_sequential(
         except subprocess.TimeoutExpired:
             candidate = {
                 "status": "failed",
+                "engine": "tesseract",
                 "psm": psm,
                 "text": "",
                 "confidence": 0,
@@ -165,6 +233,7 @@ def read_ocr_candidates_sequential(
         except Exception as exc:
             candidate = {
                 "status": "failed",
+                "engine": "tesseract",
                 "psm": psm,
                 "text": "",
                 "confidence": 0,
@@ -187,7 +256,6 @@ def read_ocr_candidates_parallel(
     *,
     deadline: float | None = None,
 ) -> list[dict[str, Any]]:
-    """Run all configured PSM modes concurrently and return every candidate."""
     workers = max(1, min(OCR_PSM_WORKERS, len(OCR_PSMS)))
     candidates: list[dict[str, Any]] = []
     timeout = remaining_timeout(deadline)
@@ -204,6 +272,7 @@ def read_ocr_candidates_parallel(
             except subprocess.TimeoutExpired:
                 candidates.append({
                     "status": "failed",
+                    "engine": "tesseract",
                     "psm": psm,
                     "text": "",
                     "confidence": 0,
@@ -213,6 +282,7 @@ def read_ocr_candidates_parallel(
             except Exception as exc:
                 candidates.append({
                     "status": "failed",
+                    "engine": "tesseract",
                     "psm": psm,
                     "text": "",
                     "confidence": 0,
@@ -237,6 +307,7 @@ def read_ocr_candidate(
     if text_run.returncode != 0:
         return {
             "status": "failed",
+            "engine": "tesseract",
             "psm": psm,
             "text": "",
             "confidence": 0,
@@ -248,6 +319,7 @@ def read_ocr_candidate(
     if not raw_text:
         return {
             "status": "completed",
+            "engine": "tesseract",
             "psm": psm,
             "text": "",
             "confidence": 0,
@@ -267,6 +339,7 @@ def read_ocr_candidate(
         quality_report = score_ocr_quality(raw_text, confidence, words)
         return {
             "status": "completed",
+            "engine": "tesseract",
             "psm": psm,
             "text": raw_text,
             "confidence": confidence,
@@ -275,11 +348,16 @@ def read_ocr_candidate(
 
     word_confidences, tsv_words = read_word_confidences(image_path, psm, timeout=call_timeout)
     merged_words = tsv_words or words
-    confidence = round(sum(word_confidences) / len(word_confidences)) if word_confidences else estimate_confidence_from_text(raw_text, merged_words)
+    confidence = (
+        round(sum(word_confidences) / len(word_confidences))
+        if word_confidences
+        else estimate_confidence_from_text(raw_text, merged_words)
+    )
     quality_report = score_ocr_quality(raw_text, confidence, merged_words)
 
     return {
         "status": "completed",
+        "engine": "tesseract",
         "psm": psm,
         "text": raw_text,
         "confidence": confidence,

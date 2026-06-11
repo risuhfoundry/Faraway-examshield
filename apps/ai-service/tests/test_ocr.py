@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -83,7 +83,7 @@ class TestParallelPsm:
         failed = [candidate for candidate in candidates if candidate["status"] == "failed"]
         passed = [candidate for candidate in candidates if candidate["status"] == "completed"]
         assert len(failed) == 1
-        assert len(passed) == 2
+        assert len(passed) == 1
 
 
 class TestSequentialPsm:
@@ -110,30 +110,60 @@ class TestSequentialPsm:
 
 
 class TestAnalyzeImage:
-    def test_analyze_image_picks_best_candidate(self):
-        candidates = [
-            {"status": "completed", "psm": "6", "text": "low", "confidence": 40, "qualityScore": 40},
-            {"status": "completed", "psm": "4", "text": "best text", "confidence": 90, "qualityScore": 92},
-        ]
+    def test_analyze_image_uses_paddle_first(self):
+        paddle_candidate = {
+            "status": "completed",
+            "engine": "paddle",
+            "text": "paddle extracted text",
+            "confidence": 88,
+            "qualityScore": 88,
+        }
 
         with patch("examshield_ai.ocr.write_temp_image", return_value=Path("/tmp/x.jpg")), patch(
-            "examshield_ai.ocr.read_ocr_candidates", return_value=candidates
+            "examshield_ai.ocr.OCR_CHAIN",
+            ("paddle", "tesseract"),
+        ), patch("examshield_ai.paddle_ocr.run_paddle_ocr", return_value=paddle_candidate), patch(
+            "examshield_ai.ocr.run_tesseract_best_candidate"
+        ) as tess_mock, patch("pathlib.Path.unlink"):
+            result = analyze_image(b"img", ".jpg")
+
+        assert result["status"] == "completed"
+        assert result["engine"] == "paddle"
+        assert result["text"] == "paddle extracted text"
+        tess_mock.assert_not_called()
+
+    def test_analyze_image_falls_back_to_tesseract(self):
+        tesseract_candidate = {
+            "status": "completed",
+            "engine": "tesseract",
+            "text": "best text",
+            "confidence": 90,
+            "qualityScore": 92,
+        }
+
+        with patch("examshield_ai.ocr.write_temp_image", return_value=Path("/tmp/x.jpg")), patch(
+            "examshield_ai.ocr.OCR_CHAIN",
+            ("paddle", "tesseract"),
+        ), patch(
+            "examshield_ai.paddle_ocr.run_paddle_ocr",
+            return_value={"status": "failed", "error": "paddle failed"},
+        ), patch(
+            "examshield_ai.ocr.run_tesseract_best_candidate",
+            return_value=tesseract_candidate,
         ), patch("pathlib.Path.unlink"):
             result = analyze_image(b"img", ".jpg")
 
         assert result["status"] == "completed"
+        assert result["engine"] == "tesseract"
         assert result["text"] == "best text"
-        assert result["confidence"] == 90
-        assert result["qualityScore"] == 92
 
-    def test_analyze_image_retries_when_all_psms_fail(self):
-        candidates = [
-            {"status": "failed", "psm": psm, "text": "", "confidence": 0, "qualityScore": 0, "error": "bad"}
-            for psm in ("6", "4")
-        ]
-
+    def test_analyze_image_retries_when_all_engines_fail(self):
         with patch("examshield_ai.ocr.write_temp_image", return_value=Path("/tmp/x.jpg")), patch(
-            "examshield_ai.ocr.read_ocr_candidates", return_value=candidates
+            "examshield_ai.ocr.OCR_CHAIN",
+            ("tesseract",),
+        ), patch(
+            "examshield_ai.ocr.run_tesseract_best_candidate",
+            return_value={"status": "failed", "error": "bad"},
         ), patch("examshield_ai.ocr.OCR_MAX_RETRIES", 1), patch("pathlib.Path.unlink"):
             result = analyze_image(b"img", ".jpg")
 
