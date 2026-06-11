@@ -29,13 +29,19 @@ services:
       - key: EXAMSHIELD_OCR_CHAIN
         value: paddle,tesseract
       - key: EXAMSHIELD_OCR_TIMEOUT
-        value: "25"
+        value: "35"
       - key: EXAMSHIELD_OCR_TOTAL_BUDGET_SECONDS
         value: "90"
       - key: EXAMSHIELD_PADDLE_TIMEOUT_SECONDS
-        value: "45"
-      - key: EXAMSHIELD_OCR_TIMEOUT
-        value: "35"
+        value: "60"
+      - key: EXAMSHIELD_PADDLE_INIT_TIMEOUT_SECONDS
+        value: "300"
+      - key: EXAMSHIELD_PADDLE_DET_MODEL
+        value: PP-OCRv5_mobile_det
+      - key: EXAMSHIELD_PADDLE_REC_MODEL
+        value: PP-OCRv5_mobile_rec
+      - key: EXAMSHIELD_PADDLE_WARMUP
+        value: "1"
       - key: EXAMSHIELD_PADDLE_LANG
         value: en
       - key: EXAMSHIELD_OCR_MAX_RETRIES
@@ -51,11 +57,11 @@ services:
       - key: EXAMSHIELD_OCR_PSM_WORKERS
         value: "2"
       - key: EXAMSHIELD_ANALYSIS_JOB_TIMEOUT_SECONDS
-        value: "120"
+        value: "180"
       - key: EXAMSHIELD_STALE_JOB_SWEEP_SECONDS
         value: "60"
       - key: EXAMSHIELD_STALE_JOB_MAX_AGE_SECONDS
-        value: "120"
+        value: "180"
       - key: EXAMSHIELD_AI_PLANNER_MODEL
         value: mistralai/ministral-14b-instruct-2512
       - key: EXAMSHIELD_AI_MODEL

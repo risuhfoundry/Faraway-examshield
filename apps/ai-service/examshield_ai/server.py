@@ -657,6 +657,20 @@ def main() -> None:
         logger.info("Evidence cache warmed on startup")
     except Exception as exc:
         logger.warning("Evidence cache warmup skipped: %s", exc)
+    ocr_chain = os.environ.get("EXAMSHIELD_OCR_CHAIN", "paddle,tesseract").lower()
+    if "paddle" in ocr_chain:
+        try:
+            from .paddle_ocr import PADDLE_WARMUP_ENABLED, warmup_paddle_engine
+
+            if PADDLE_WARMUP_ENABLED:
+                if warmup_paddle_engine():
+                    logger.info("PaddleOCR engine warmed on startup")
+                else:
+                    logger.warning(
+                        "PaddleOCR warmup did not complete; first OCR job may download models"
+                    )
+        except Exception as exc:
+            logger.warning("PaddleOCR warmup skipped: %s", exc)
     _start_stale_job_sweeper(handler.store)
     server = ThreadingHTTPServer((settings.host, settings.port), handler)
     logger.info(f"EXAMSHIELD AI service listening on http://{settings.host}:{settings.port}")

@@ -13,15 +13,25 @@ logger = logging.getLogger(__name__)
 _paddle_engine: Any | None = None
 _paddle_lock = threading.Lock()
 _paddle_init_error: str | None = None
+_paddle_warmup_done = False
 
 PADDLE_LANG = os.environ.get("EXAMSHIELD_PADDLE_LANG", "en").strip() or "en"
+PADDLE_DET_MODEL = os.environ.get("EXAMSHIELD_PADDLE_DET_MODEL", "PP-OCRv5_mobile_det").strip()
+PADDLE_REC_MODEL = os.environ.get("EXAMSHIELD_PADDLE_REC_MODEL", "PP-OCRv5_mobile_rec").strip()
 PADDLE_USE_ANGLE_CLS = os.environ.get("EXAMSHIELD_PADDLE_USE_ANGLE_CLS", "1").strip().lower() in {
     "1",
     "true",
     "yes",
     "on",
 }
+PADDLE_WARMUP_ENABLED = os.environ.get("EXAMSHIELD_PADDLE_WARMUP", "1").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 PADDLE_TIMEOUT_SECONDS = int(os.environ.get("EXAMSHIELD_PADDLE_TIMEOUT_SECONDS", "45"))
+PADDLE_INIT_TIMEOUT_SECONDS = int(os.environ.get("EXAMSHIELD_PADDLE_INIT_TIMEOUT_SECONDS", "300"))
 
 
 def paddle_importable() -> bool:
@@ -42,11 +52,47 @@ def paddle_status() -> dict[str, Any]:
         "importable": paddle_importable(),
         "initialized": _paddle_engine is not None,
         "available": paddle_available(),
+        "warmupDone": _paddle_warmup_done,
         "lang": PADDLE_LANG,
+        "detModel": PADDLE_DET_MODEL or None,
+        "recModel": PADDLE_REC_MODEL or None,
         "useAngleCls": PADDLE_USE_ANGLE_CLS,
         "timeoutSeconds": PADDLE_TIMEOUT_SECONDS,
+        "initTimeoutSeconds": PADDLE_INIT_TIMEOUT_SECONDS,
         "initError": _paddle_init_error,
     }
+
+
+def warmup_paddle_engine(timeout: int | None = None) -> bool:
+    """Download and initialize Paddle models before the first OCR job."""
+    global _paddle_warmup_done
+    if not paddle_importable():
+        logger.info("PaddleOCR not importable; warmup skipped")
+        return False
+    if _paddle_engine is not None:
+        _paddle_warmup_done = True
+        return True
+
+    init_timeout = timeout or PADDLE_INIT_TIMEOUT_SECONDS
+    logger.info(
+        "PaddleOCR warmup starting (det=%s, rec=%s, timeout=%ss)",
+        PADDLE_DET_MODEL or "default",
+        PADDLE_REC_MODEL or "default",
+        init_timeout,
+    )
+    try:
+        with ThreadPoolExecutor(max_workers=1, thread_name_prefix="paddle-warmup") as executor:
+            future = executor.submit(get_paddle_engine)
+            future.result(timeout=init_timeout)
+        _paddle_warmup_done = True
+        logger.info("PaddleOCR warmup complete")
+        return True
+    except FuturesTimeoutError:
+        logger.error("PaddleOCR warmup timed out after %ss", init_timeout)
+        return False
+    except Exception as exc:
+        logger.warning("PaddleOCR warmup failed: %s", exc)
+        return False
 
 
 def get_paddle_engine() -> Any:
@@ -71,17 +117,30 @@ def get_paddle_engine() -> Any:
             raise RuntimeError(_paddle_init_error) from exc
 
 
+def _paddle_init_kwargs(params: set[str]) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {}
+    if "lang" in params:
+        kwargs["lang"] = PADDLE_LANG
+    if PADDLE_DET_MODEL and "text_detection_model_name" in params:
+        kwargs["text_detection_model_name"] = PADDLE_DET_MODEL
+    if PADDLE_REC_MODEL and "text_recognition_model_name" in params:
+        kwargs["text_recognition_model_name"] = PADDLE_REC_MODEL
+    if "device" in params:
+        kwargs["device"] = "cpu"
+    if "use_textline_orientation" in params:
+        kwargs["use_textline_orientation"] = PADDLE_USE_ANGLE_CLS
+    if "use_doc_orientation_classify" in params:
+        kwargs["use_doc_orientation_classify"] = False
+    if "use_doc_unwarping" in params:
+        kwargs["use_doc_unwarping"] = False
+    return kwargs
+
+
 def _create_paddle_engine() -> Any:
     from paddleocr import PaddleOCR
 
     params = set(inspect.signature(PaddleOCR.__init__).parameters) - {"self"}
-    attempts: list[dict[str, Any]] = []
-
-    if "device" in params:
-        attempt: dict[str, Any] = {"lang": PADDLE_LANG, "device": "cpu"}
-        if "use_textline_orientation" in params:
-            attempt["use_textline_orientation"] = PADDLE_USE_ANGLE_CLS
-        attempts.append(attempt)
+    attempts: list[dict[str, Any]] = [_paddle_init_kwargs(params)]
 
     if "use_gpu" in params:
         attempts.append(
