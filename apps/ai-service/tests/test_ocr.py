@@ -119,7 +119,7 @@ class TestAnalyzeImage:
             "qualityScore": 88,
         }
 
-        with patch("examshield_ai.ocr.write_temp_image", return_value=Path("/tmp/x.jpg")), patch(
+        with patch("examshield_ai.ocr.prepare_ocr_image", return_value=Path("/tmp/x.jpg")), patch(
             "examshield_ai.ocr.OCR_CHAIN",
             ("paddle", "tesseract"),
         ), patch("examshield_ai.paddle_ocr.run_paddle_ocr", return_value=paddle_candidate), patch(
@@ -141,7 +141,7 @@ class TestAnalyzeImage:
             "qualityScore": 92,
         }
 
-        with patch("examshield_ai.ocr.write_temp_image", return_value=Path("/tmp/x.jpg")), patch(
+        with patch("examshield_ai.ocr.prepare_ocr_image", return_value=Path("/tmp/x.jpg")), patch(
             "examshield_ai.ocr.OCR_CHAIN",
             ("paddle", "tesseract"),
         ), patch(
@@ -158,7 +158,7 @@ class TestAnalyzeImage:
         assert result["text"] == "best text"
 
     def test_analyze_image_retries_when_all_engines_fail(self):
-        with patch("examshield_ai.ocr.write_temp_image", return_value=Path("/tmp/x.jpg")), patch(
+        with patch("examshield_ai.ocr.prepare_ocr_image", return_value=Path("/tmp/x.jpg")), patch(
             "examshield_ai.ocr.OCR_CHAIN",
             ("tesseract",),
         ), patch(
@@ -169,3 +169,18 @@ class TestAnalyzeImage:
 
         assert result["status"] == "failed"
         assert "bad" in result["error"]
+
+    def test_analyze_image_uses_paddle_timeout_not_tesseract_timeout(self):
+        with patch("examshield_ai.ocr.prepare_ocr_image", return_value=Path("/tmp/x.jpg")), patch(
+            "examshield_ai.ocr.OCR_CHAIN",
+            ("paddle",),
+        ), patch("examshield_ai.ocr.OCR_TIMEOUT_SECONDS", 25), patch(
+            "examshield_ai.paddle_ocr.PADDLE_TIMEOUT_SECONDS",
+            60,
+        ), patch(
+            "examshield_ai.paddle_ocr.run_paddle_ocr",
+            return_value={"status": "failed", "error": "paddle failed"},
+        ) as paddle_mock, patch("pathlib.Path.unlink"):
+            analyze_image(b"img", ".jpg")
+
+        assert paddle_mock.call_args.kwargs["timeout"] == 60

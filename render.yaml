@@ -29,9 +29,11 @@ services:
       - key: EXAMSHIELD_OCR_CHAIN
         value: paddle,tesseract
       - key: EXAMSHIELD_OCR_TIMEOUT
-        value: "35"
+        value: "45"
       - key: EXAMSHIELD_OCR_TOTAL_BUDGET_SECONDS
-        value: "90"
+        value: "120"
+      - key: EXAMSHIELD_OCR_MAX_DIMENSION
+        value: "1920"
       - key: EXAMSHIELD_PADDLE_TIMEOUT_SECONDS
         value: "60"
       - key: EXAMSHIELD_PADDLE_INIT_TIMEOUT_SECONDS

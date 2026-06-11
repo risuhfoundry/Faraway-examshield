@@ -29,8 +29,9 @@ def _env_bool(name: str, default: str = "1") -> bool:
 
 OCR_CHAIN = _split_csv(os.environ.get("EXAMSHIELD_OCR_CHAIN", ""), "paddle,tesseract")
 OCR_PSMS = _split_csv(os.environ.get("EXAMSHIELD_OCR_PSMS", ""), "6,4")
-OCR_TIMEOUT_SECONDS = int(os.environ.get("EXAMSHIELD_OCR_TIMEOUT", "25"))
-OCR_TOTAL_BUDGET_SECONDS = int(os.environ.get("EXAMSHIELD_OCR_TOTAL_BUDGET_SECONDS", "90"))
+OCR_TIMEOUT_SECONDS = int(os.environ.get("EXAMSHIELD_OCR_TIMEOUT", "45"))
+OCR_TOTAL_BUDGET_SECONDS = int(os.environ.get("EXAMSHIELD_OCR_TOTAL_BUDGET_SECONDS", "120"))
+OCR_MAX_DIMENSION = int(os.environ.get("EXAMSHIELD_OCR_MAX_DIMENSION", "1920"))
 OCR_MAX_RETRIES = int(os.environ.get("EXAMSHIELD_OCR_MAX_RETRIES", "0"))
 OCR_PSM_WORKERS = int(os.environ.get("EXAMSHIELD_OCR_PSM_WORKERS", str(len(OCR_PSMS))))
 OCR_MODE = os.environ.get("EXAMSHIELD_OCR_MODE", "sequential").strip().lower()
@@ -48,6 +49,7 @@ def ocr_runtime_status() -> dict[str, Any]:
             "psms": list(OCR_PSMS),
             "mode": OCR_MODE,
             "timeoutSeconds": OCR_TIMEOUT_SECONDS,
+            "maxDimension": OCR_MAX_DIMENSION,
         },
         "paddle": paddle_status(),
     }
@@ -56,7 +58,7 @@ def ocr_runtime_status() -> dict[str, Any]:
 def analyze_image(image_bytes: bytes, suffix: str) -> dict[str, Any]:
     started = time.perf_counter()
     deadline = started + OCR_TOTAL_BUDGET_SECONDS
-    temp_path = write_temp_image(image_bytes, suffix)
+    temp_path = prepare_ocr_image(image_bytes, suffix)
     errors: list[str] = []
 
     try:
@@ -71,11 +73,11 @@ def analyze_image(image_bytes: bytes, suffix: str) -> dict[str, Any]:
                     break
 
                 if engine == "paddle":
-                    from .paddle_ocr import run_paddle_ocr
+                    from .paddle_ocr import PADDLE_TIMEOUT_SECONDS, run_paddle_ocr
 
                     candidate = run_paddle_ocr(
                         temp_path,
-                        timeout=remaining_timeout(deadline, OCR_TIMEOUT_SECONDS),
+                        timeout=remaining_timeout(deadline, PADDLE_TIMEOUT_SECONDS),
                     )
                 elif engine == "tesseract":
                     candidate = run_tesseract_best_candidate(temp_path, deadline=deadline)
@@ -84,7 +86,9 @@ def analyze_image(image_bytes: bytes, suffix: str) -> dict[str, Any]:
                     continue
 
                 if candidate.get("status") == "failed":
-                    errors.append(str(candidate.get("error") or f"{engine} failed"))
+                    error = str(candidate.get("error") or f"{engine} failed")
+                    logger.warning("%s OCR failed: %s", engine, error)
+                    errors.append(error)
                     continue
 
                 raw_text = str(candidate.get("text") or "")
@@ -167,6 +171,49 @@ def write_temp_image(image_bytes: bytes, suffix: str) -> Path:
         return Path(temp_file.name)
     finally:
         temp_file.close()
+
+
+def prepare_ocr_image(image_bytes: bytes, suffix: str) -> Path:
+    """Downscale large Telegram photos so CPU OCR stays within timeout budgets."""
+    if OCR_MAX_DIMENSION <= 0:
+        return write_temp_image(image_bytes, suffix)
+
+    try:
+        import cv2
+        import numpy as np
+
+        decoded = cv2.imdecode(np.frombuffer(image_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
+        if decoded is None:
+            return write_temp_image(image_bytes, suffix)
+
+        height, width = decoded.shape[:2]
+        longest = max(height, width)
+        if longest <= OCR_MAX_DIMENSION:
+            return write_temp_image(image_bytes, suffix)
+
+        scale = OCR_MAX_DIMENSION / longest
+        resized = cv2.resize(
+            decoded,
+            (max(1, int(width * scale)), max(1, int(height * scale))),
+            interpolation=cv2.INTER_AREA,
+        )
+        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+        try:
+            if not cv2.imwrite(temp_file.name, resized):
+                return write_temp_image(image_bytes, suffix)
+            logger.info(
+                "Downscaled OCR image from %sx%s to %sx%s",
+                width,
+                height,
+                resized.shape[1],
+                resized.shape[0],
+            )
+            return Path(temp_file.name)
+        finally:
+            temp_file.close()
+    except Exception as exc:
+        logger.warning("OCR image preprocess skipped: %s", exc)
+        return write_temp_image(image_bytes, suffix)
 
 
 def remaining_timeout(deadline: float | None, fallback: int = OCR_TIMEOUT_SECONDS) -> int:
