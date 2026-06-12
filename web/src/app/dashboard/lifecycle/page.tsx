@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { motion } from "framer-motion";
 import { FilePlus, Eye, Droplets, Fingerprint, FileText, CheckCircle, Clock, AlertOctagon } from "lucide-react";
-import type { EvidenceListResponse, ForensicReport } from "@/lib/evidence-types";
+import type { ForensicReport } from "@/lib/evidence-types";
 import { formatEvidenceTime } from "@/lib/evidence-format";
+import { useEvidenceFeed } from "@/lib/use-evidence-feed";
 
 const investigationStages = [
   { id: "upload", label: "Upload", icon: FilePlus },
@@ -23,25 +24,10 @@ function getReportStage(report: ForensicReport): number {
 }
 
 export default function ExamLifecycle() {
-  const [data, setData] = useState<EvidenceListResponse | null>(null);
+  const { data } = useEvidenceFeed({ intervalMs: 5000 });
   const [selected, setSelected] = useState<ForensicReport | null>(null);
 
-  useEffect(() => {
-    let active = true;
-    async function load() {
-      try {
-        const res = await fetch("/evidence", { cache: "no-store" });
-        if (!res.ok) return;
-        const payload = (await res.json()) as EvidenceListResponse;
-        if (active) setData(payload);
-      } catch {}
-    }
-    load();
-    const interval = window.setInterval(load, 5000);
-    return () => { active = false; window.clearInterval(interval); };
-  }, []);
-
-  const reports = data?.forensicReports ?? [];
+  const reports = data.forensicReports;
   const activeReports = reports.filter((r) => r.status === "investigation-complete" && r.finalConfidence > 50);
   const noMatch = reports.filter((r) => r.status === "no-match");
 

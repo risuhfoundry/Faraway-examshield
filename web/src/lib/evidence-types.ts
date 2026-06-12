@@ -5,9 +5,9 @@ export type EvidenceStatus =
   | "analysis-failed"
   | "investigating"
   | "resolved";
-export type EvidenceRiskLevel = "unknown";
+export type EvidenceRiskLevel = "unknown" | "low" | "medium" | "high" | "critical";
 export type EvidenceSource = "manual-upload" | "telegram";
-export type OcrStatus = "not-started" | "queued" | "processing" | "completed" | "failed";
+export type OcrStatus = "not-started" | "queued" | "processing" | "completed" | "failed" | "not-applicable";
 export type AnalysisJobStatus = "queued" | "processing" | "completed" | "failed";
 export type WatermarkStatus = "not-detected" | "detected" | "invalid";
 export type AttributionStatus =
@@ -35,6 +35,12 @@ export type EvidenceRecord = {
   ocrProcessingTimeMs: number | null;
   analysisStartedAt: string | null;
   analysisCompletedAt: string | null;
+  detectionScore: number | null;
+  detectionMaxScore: number | null;
+  detectionCategories: string[];
+  detectionSeverity: EvidenceRiskLevel | null;
+  detectionMatches: DetectionMatch[];
+  telegramAlertSent: boolean;
 };
 
 export type TelegramEvent = {
@@ -47,6 +53,19 @@ export type TelegramEvent = {
   filename: string | null;
   fileType: string | null;
   receivedAt: string;
+  detectionScore?: number | null;
+  detectionMaxScore?: number | null;
+  detectionCategories?: string[];
+  detectionSeverity?: EvidenceRiskLevel | null;
+  detectionMatches?: DetectionMatch[];
+  alertSent?: boolean;
+};
+
+export type DetectionMatch = {
+  type: string | null;
+  text: string | null;
+  category: string | null;
+  description: string | null;
 };
 
 export type AnalysisJob = {
@@ -75,6 +94,8 @@ export type AttributionRecord = {
   status: AttributionStatus;
   matchedWatermarkId: string | null;
   centerName: string | null;
+  city: string | null;
+  state: string | null;
   ocrConfidence: number | null;
   watermarkConfidence: number | null;
   finalConfidence: number;
@@ -98,6 +119,9 @@ export type ForensicReport = {
   centerCode: string | null;
   printerId: string | null;
   batchId: string | null;
+  centerName?: string | null;
+  city?: string | null;
+  state?: string | null;
   riskLevel: string | null;
   status: "investigation-complete" | "no-match";
   ocrConfidence: number | null;
@@ -116,6 +140,8 @@ export type AlertRecord = {
   risk: string;
   createdAt: string;
   status: "open";
+  detectionScore?: number | null;
+  detectionMaxScore?: number | null;
 };
 
 export type EvidenceActivityEvent = {
@@ -137,6 +163,9 @@ export type EvidenceActivityEvent = {
     | "attribution-complete"
     | "investigation-completed"
     | "critical-alert-generated"
+    | "detection-alert-generated"
+    | "text-evidence-created"
+    | "text-evidence-completed"
     | "analysis-failed"
     | "results-stored";
   title:
@@ -157,6 +186,9 @@ export type EvidenceActivityEvent = {
     | "Attribution Complete"
     | "Investigation Completed"
     | "Critical Alert Generated"
+    | "Detection Alert Generated"
+    | "Suspicious Text Detected"
+    | "Text Evidence Completed"
     | "Analysis Failed"
     | "Results Stored";
   evidenceId: string;

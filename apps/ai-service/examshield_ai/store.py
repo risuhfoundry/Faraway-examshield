@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
 
+from .detect import get_alert_severity
 from .settings import Settings
 
 logger = logging.getLogger(__name__)
@@ -334,7 +335,14 @@ class EvidenceStore:
             "alerts": [item for item in data["alerts"] if item.get("evidenceId") == evidence_id],
         }
 
-    def create_evidence(self, uploaded: UploadedFile, *, source: str = "manual-upload", telegram: JsonObject | None = None) -> JsonObject:
+    def create_evidence(
+        self,
+        uploaded: UploadedFile,
+        *,
+        source: str = "manual-upload",
+        telegram: JsonObject | None = None,
+        detection: JsonObject | None = None,
+    ) -> JsonObject:
         self.ensure_storage()
         self.validate_upload(uploaded)
         storage_id = str(uuid4())
@@ -364,6 +372,8 @@ class EvidenceStore:
             "originalFilename": safe_name,
             "storedFilename": stored_filename,
             "storedAt": uploaded_at,
+            **detection_record_fields(detection),
+            "telegramAlertSent": False,
         }
         self._write_file_bytes(stored_filename, uploaded.data, uploaded.content_type)
         self._write_stored_record(record)
@@ -395,6 +405,15 @@ class EvidenceStore:
             "storedFilename": record.get("storedFilename"),
             "fileType": record.get("fileType"),
             "filename": record.get("filename"),
+        }
+
+    def get_asset_bytes(self, evidence_id: str) -> JsonObject | None:
+        asset = self.get_asset(evidence_id)
+        if not asset or not asset.get("storedFilename"):
+            return None
+        return {
+            **asset,
+            "data": self._read_file_bytes(str(asset["storedFilename"])),
         }
 
     def create_analysis_job(self, evidence_id: str) -> JsonObject:
@@ -688,11 +707,12 @@ class EvidenceStore:
             evidence_id = None
             activity: list[JsonObject] = []
             # Create text evidence for suspicious messages without files
-            if text and detection and detection.get("score", 0) >= 7.0:
+            if text and detection and float(detection.get("score") or 0) >= self.settings.detect_threshold:
                 created = self.create_text_evidence(
                     text,
                     source="telegram",
                     telegram={"messageId": str(message_id), "chatId": str(chat_id), "timestamp": timestamp},
+                    detection=detection,
                 )
                 evidence_id = created["evidence"]["evidenceId"]
                 activity.append(created["activity"])
@@ -707,6 +727,7 @@ class EvidenceStore:
                     "filename": None,
                     "fileType": None,
                     "receivedAt": utc_now(),
+                    **detection_event_fields(detection),
                 }
             )
             return {"telegramEvent": event, "evidence": self.get_evidence_by_id(evidence_id) if evidence_id else None, "activity": activity, "duplicate": False}
@@ -715,6 +736,7 @@ class EvidenceStore:
             file,
             source="telegram",
             telegram={"messageId": str(message_id), "chatId": str(chat_id), "timestamp": timestamp},
+            detection=detection,
         )
         detected = self.record_activity(
             {
@@ -736,6 +758,7 @@ class EvidenceStore:
                 "filename": file.filename,
                 "fileType": file.content_type,
                 "receivedAt": created["evidence"]["uploadedAt"],
+                **detection_event_fields(detection),
             }
         )
         return {
@@ -792,7 +815,14 @@ class EvidenceStore:
     # ------------------------------------------------------------------
     # Text-only evidence (for suspicious messages without files)
     # ------------------------------------------------------------------
-    def create_text_evidence(self, text: str, *, source: str = "telegram", telegram: JsonObject | None = None) -> JsonObject:
+    def create_text_evidence(
+        self,
+        text: str,
+        *,
+        source: str = "telegram",
+        telegram: JsonObject | None = None,
+        detection: JsonObject | None = None,
+    ) -> JsonObject:
         self.ensure_storage()
         evidence_id = self._next_evidence_id()
         stored_filename = f"{evidence_id}.txt"
@@ -805,14 +835,14 @@ class EvidenceStore:
             "fileType": "text/plain",
             "source": source,
             "uploadedAt": uploaded_at,
-            "status": "detected",
+            "status": "pending-analysis",
             "riskLevel": "unknown",
             "telegramMessageId": (telegram or {}).get("messageId"),
             "telegramChatId": (telegram or {}).get("chatId"),
             "telegramTimestamp": (telegram or {}).get("timestamp"),
-            "ocrStatus": "not-applicable",
+            "ocrStatus": "completed",
             "ocrText": text,
-            "ocrConfidence": None,
+            "ocrConfidence": detection_confidence_score(detection) if detection else None,
             "ocrProcessingTimeMs": None,
             "analysisStartedAt": None,
             "analysisCompletedAt": None,
@@ -820,6 +850,8 @@ class EvidenceStore:
             "originalFilename": stored_filename,
             "storedFilename": stored_filename,
             "storedAt": uploaded_at,
+            **detection_record_fields(detection),
+            "telegramAlertSent": False,
         }
         self._write_stored_record(record)
         activity = self.record_activity(
@@ -832,6 +864,58 @@ class EvidenceStore:
             }
         )
         return {"evidence": self._to_evidence_record(record), "activity": activity}
+
+    def complete_text_evidence(
+        self,
+        evidence_id: str,
+        detection: JsonObject | None,
+        *,
+        alert_sent: bool = False,
+        forensic_report: JsonObject | None = None,
+    ) -> JsonObject:
+        now = utc_now()
+        confidence = detection_confidence_score(detection)
+        report_risk = str((forensic_report or {}).get("riskLevel") or "").lower()
+        severity = (
+            report_risk
+            if report_risk in {"critical", "high", "medium", "low"}
+            else get_alert_severity(detection or {"score": 0})
+        )
+        if forensic_report and forensic_report.get("status") == "investigation-complete":
+            confidence = int(forensic_report.get("finalConfidence") or confidence)
+        evidence = self._update_evidence_record(
+            evidence_id,
+            lambda record: {
+                **record,
+                "status": "completed",
+                "riskLevel": severity,
+                "ocrStatus": "completed",
+                "ocrConfidence": confidence,
+                "analysisStartedAt": record.get("analysisStartedAt") or record.get("uploadedAt"),
+                "analysisCompletedAt": now,
+                **detection_record_fields(detection),
+                "telegramAlertSent": alert_sent,
+            },
+        )
+        self._update_telegram_event_for_evidence(
+            evidence_id,
+            lambda event: {
+                **event,
+                **detection_event_fields(detection),
+                "alertSent": alert_sent,
+                "processedAt": now,
+            },
+        )
+        activity = self.record_activity(
+            {
+                "type": "text-evidence-completed",
+                "title": "Text Evidence Completed",
+                "evidenceId": evidence_id,
+                "timestamp": now,
+                "detail": f"Detection score {float((detection or {}).get('score') or 0):g}/50",
+            }
+        )
+        return {"evidence": evidence, "activity": activity}
 
     def run_attribution_for_evidence(self, evidence_id: str, ocr_text: str, ocr_confidence: int | None) -> JsonObject:
         now = utc_now()
@@ -892,6 +976,8 @@ class EvidenceStore:
                 "status": registry_record["status"],
                 "matchedWatermarkId": registry_record["watermarkId"],
                 "centerName": registry_record["centerName"],
+                "city": registry_record.get("city"),
+                "state": registry_record.get("state"),
             }
 
         if not match:
@@ -908,6 +994,8 @@ class EvidenceStore:
                 "status": "no-match",
                 "matchedWatermarkId": None,
                 "centerName": None,
+                "city": None,
+                "state": None,
                 "ocrConfidence": ocr_confidence,
                 "watermarkConfidence": watermark["confidence"],
                 "finalConfidence": 0,
@@ -923,6 +1011,9 @@ class EvidenceStore:
                     "centerCode": None,
                     "printerId": None,
                     "batchId": None,
+                    "centerName": None,
+                    "city": None,
+                    "state": None,
                     "riskLevel": None,
                     "status": "no-match",
                     "ocrConfidence": ocr_confidence,
@@ -961,6 +1052,8 @@ class EvidenceStore:
             "status": match["status"],
             "matchedWatermarkId": match["matchedWatermarkId"],
             "centerName": match["centerName"],
+            "city": match.get("city"),
+            "state": match.get("state"),
             "ocrConfidence": ocr_confidence,
             "watermarkConfidence": watermark["confidence"],
             "finalConfidence": final_confidence,
@@ -976,6 +1069,9 @@ class EvidenceStore:
                 "centerCode": match["centerCode"],
                 "printerId": match["printerId"],
                 "batchId": match["batchId"],
+                "centerName": match.get("centerName"),
+                "city": match.get("city"),
+                "state": match.get("state"),
                 "riskLevel": "critical" if match["status"] == "compromised" else match["status"],
                 "status": "investigation-complete",
                 "ocrConfidence": ocr_confidence,
@@ -1064,6 +1160,44 @@ class EvidenceStore:
         )
         return {"alert": alert, "activity": activity}
 
+    def create_detection_alert_if_needed(
+        self,
+        evidence_id: str,
+        detection: JsonObject | None,
+        report: JsonObject | None = None,
+    ) -> JsonObject:
+        if not detection or float(detection.get("score") or 0) < self.settings.detect_threshold:
+            return {"alert": None, "activity": None}
+        existing = self.find_alert_by_evidence_id(evidence_id)
+        if existing:
+            return {"alert": existing, "activity": None}
+        now = utc_now()
+        severity = get_alert_severity(detection)
+        alert = {
+            "alertId": prefixed_id("ALERT", evidence_id),
+            "evidenceId": evidence_id,
+            "paperId": (report or {}).get("paperIdentified"),
+            "centerCode": (report or {}).get("centerCode"),
+            "watermarkId": (report or {}).get("watermarkId"),
+            "confidence": detection_confidence_score(detection),
+            "risk": severity,
+            "createdAt": now,
+            "status": "open",
+            "detectionScore": detection.get("score"),
+            "detectionMaxScore": detection.get("max_score") or 50,
+        }
+        self._write_json("alerts", f"{evidence_id}.json", alert)
+        activity = self.record_activity(
+            {
+                "type": "detection-alert-generated",
+                "title": "Detection Alert Generated",
+                "evidenceId": evidence_id,
+                "timestamp": now,
+                "detail": f"{severity.upper()} text detection at {alert['confidence']}%",
+            }
+        )
+        return {"alert": alert, "activity": activity}
+
     def find_alert_by_evidence_id(self, evidence_id: str) -> JsonObject | None:
         for alert in self._read_json_dir("alerts"):
             if alert.get("evidenceId") == evidence_id:
@@ -1109,6 +1243,8 @@ class EvidenceStore:
             "status": record["status"],
             "matchedWatermarkId": record["watermarkId"],
             "centerName": record["centerName"],
+            "city": record.get("city"),
+            "state": record.get("state"),
         }
 
     def find_registry_record_by_watermark(self, watermark_id: str) -> JsonObject | None:
@@ -1239,6 +1375,21 @@ class EvidenceStore:
         updated = updater(self._normalize_stored_record(record))
         self._write_stored_record(updated)
         return self._to_evidence_record(updated)
+
+    def _update_telegram_event_for_evidence(
+        self,
+        evidence_id: str,
+        updater: Callable[[JsonObject], JsonObject],
+    ) -> JsonObject | None:
+        event = next(
+            (item for item in self._read_json_dir("telegram-events") if item.get("evidenceId") == evidence_id),
+            None,
+        )
+        if not event:
+            return None
+        updated = updater(event)
+        self._write_telegram_event(updated)
+        return updated
 
     def _next_evidence_id(self) -> str:
         maximum = 0
@@ -1377,6 +1528,12 @@ class EvidenceStore:
             "ocrProcessingTimeMs": record.get("ocrProcessingTimeMs"),
             "analysisStartedAt": record.get("analysisStartedAt"),
             "analysisCompletedAt": record.get("analysisCompletedAt"),
+            "detectionScore": record.get("detectionScore"),
+            "detectionMaxScore": record.get("detectionMaxScore"),
+            "detectionCategories": record.get("detectionCategories") or [],
+            "detectionSeverity": record.get("detectionSeverity"),
+            "detectionMatches": record.get("detectionMatches") or [],
+            "telegramAlertSent": bool(record.get("telegramAlertSent")),
         }
 
     @staticmethod
@@ -1399,11 +1556,70 @@ class EvidenceStore:
             "ocrProcessingTimeMs": normalized.get("ocrProcessingTimeMs"),
             "analysisStartedAt": normalized.get("analysisStartedAt"),
             "analysisCompletedAt": normalized.get("analysisCompletedAt"),
+            "detectionScore": normalized.get("detectionScore"),
+            "detectionMaxScore": normalized.get("detectionMaxScore"),
+            "detectionCategories": normalized.get("detectionCategories"),
+            "detectionSeverity": normalized.get("detectionSeverity"),
+            "detectionMatches": normalized.get("detectionMatches"),
+            "telegramAlertSent": normalized.get("telegramAlertSent"),
         }
 
 
 def _first(items: list[JsonObject], evidence_id: str) -> JsonObject | None:
     return next((item for item in items if item.get("evidenceId") == evidence_id), None)
+
+
+def detection_confidence_score(detection: JsonObject | None) -> int:
+    if not detection:
+        return 0
+    try:
+        score = float(detection.get("score") or 0)
+        max_score = float(detection.get("max_score") or 50)
+    except (TypeError, ValueError):
+        return 0
+    if max_score <= 0:
+        return 0
+    return max(0, min(100, round((score / max_score) * 100)))
+
+
+def detection_record_fields(detection: JsonObject | None) -> JsonObject:
+    if not detection:
+        return {
+            "detectionScore": None,
+            "detectionMaxScore": None,
+            "detectionCategories": [],
+            "detectionSeverity": None,
+            "detectionMatches": [],
+        }
+    matches = detection.get("matches") if isinstance(detection.get("matches"), list) else []
+    categories = detection.get("categories") if isinstance(detection.get("categories"), list) else []
+    return {
+        "detectionScore": detection.get("score"),
+        "detectionMaxScore": detection.get("max_score") or 50,
+        "detectionCategories": categories,
+        "detectionSeverity": get_alert_severity(detection),
+        "detectionMatches": [
+            {
+                "type": item.get("type"),
+                "text": item.get("text"),
+                "category": item.get("category"),
+                "description": item.get("description"),
+            }
+            for item in matches[:12]
+            if isinstance(item, dict)
+        ],
+    }
+
+
+def detection_event_fields(detection: JsonObject | None) -> JsonObject:
+    fields = detection_record_fields(detection)
+    return {
+        "detectionScore": fields["detectionScore"],
+        "detectionMaxScore": fields["detectionMaxScore"],
+        "detectionCategories": fields["detectionCategories"],
+        "detectionSeverity": fields["detectionSeverity"],
+        "detectionMatches": fields["detectionMatches"],
+    }
 
 
 def _time_sort_key(value: Any) -> float:

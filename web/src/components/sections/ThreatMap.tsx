@@ -1,26 +1,13 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import IndiaMap from "@svg-maps/india";
 import { X, AlertTriangle, ShieldCheck, Search } from "lucide-react";
-
-interface Center {
-  id: string;
-  centerCode: string;
-  name: string;
-  city: string;
-  state: string;
-  lat: number;
-  lng: number;
-  status: "secure" | "investigating" | "compromised";
-  risk: number;
-  activeCases: number;
-  evidenceCount: number;
-}
+import type { EvidenceListResponse } from "@/lib/evidence-types";
+import { buildThreatMapCenters, type ThreatMapCenter } from "@/lib/map-centers";
 
 // Convert lat/lng to SVG coordinates for the @svg-maps/india viewBox (0 0 612 696)
-// India spans roughly: lat 8°N–37°N, lng 68°E–97°E
 function latLngToSvg(lat: number, lng: number): { x: number; y: number } {
   const LAT_MIN = 7.5, LAT_MAX = 37.5;
   const LNG_MIN = 67.5, LNG_MAX = 97.5;
@@ -51,20 +38,30 @@ const STATUS_CONFIG = {
   },
 };
 
-export function ThreatMap() {
-  const [centers, setCenters] = useState<Center[]>([]);
-  const [hoveredCenter, setHoveredCenter] = useState<Center | null>(null);
-  const [selectedCenter, setSelectedCenter] = useState<Center | null>(null);
+type ThreatMapProps = {
+  evidenceData?: EvidenceListResponse;
+};
+
+export function ThreatMap({ evidenceData }: ThreatMapProps) {
+  const [geoLookup, setGeoLookup] = useState<
+    Array<Pick<ThreatMapCenter, "centerCode" | "name" | "city" | "state" | "lat" | "lng">>
+  >([]);
+  const [hoveredCenter, setHoveredCenter] = useState<ThreatMapCenter | null>(null);
+  const [selectedCenter, setSelectedCenter] = useState<ThreatMapCenter | null>(null);
   const [filter, setFilter] = useState<"all" | "compromised" | "investigating" | "secure">("all");
   const [pulsingId, setPulsingId] = useState<string | null>(null);
 
   useEffect(() => {
     fetch("/registry/centers.json")
       .then((r) => r.json())
-      .then((data) => setCenters(data.centers));
+      .then((data) => setGeoLookup(data.centers ?? []));
   }, []);
 
-  // Simulate live events — pulse a random compromised node every ~6s
+  const centers = useMemo(() => {
+    if (!evidenceData) return [];
+    return buildThreatMapCenters(evidenceData, geoLookup);
+  }, [evidenceData, geoLookup]);
+
   useEffect(() => {
     if (centers.length === 0) return;
     const compromised = centers.filter((c) => c.status === "compromised");
@@ -92,7 +89,6 @@ export function ThreatMap() {
 
   return (
     <div className="relative w-full h-full flex flex-col overflow-hidden">
-      {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-3 border-b border-white/10 shrink-0">
         <div className="flex items-center gap-3">
           <h3 className="text-xs font-semibold uppercase tracking-[0.15em] text-white/50">
@@ -103,7 +99,6 @@ export function ThreatMap() {
             <span className="relative inline-flex rounded-full h-2 w-2 bg-white" />
           </span>
         </div>
-        {/* National Threat Index */}
         <div className="flex items-center gap-2">
           <span className="text-[10px] uppercase tracking-widest text-white/30 font-mono">National Threat Index</span>
           <span className="text-base font-bold font-heading text-white">{nationalRisk}</span>
@@ -120,7 +115,6 @@ export function ThreatMap() {
         </div>
       </div>
 
-      {/* Filter Tabs */}
       <div className="flex items-center gap-1 px-5 py-2 border-b border-white/5 shrink-0">
         {(["all", "compromised", "investigating", "secure"] as const).map((f) => (
           <button
@@ -133,7 +127,7 @@ export function ThreatMap() {
             }`}
           >
             {f === "all"
-              ? `All (${centers.length})`
+              ? `Evidence (${centers.length})`
               : f === "compromised"
               ? `● ${stats.compromised} Compromised`
               : f === "investigating"
@@ -143,20 +137,15 @@ export function ThreatMap() {
         ))}
       </div>
 
-      {/* Map Area */}
       <div className="flex-1 relative overflow-hidden bg-[#040406]">
-        {/* Vignette */}
         <div className="absolute inset-0 pointer-events-none z-10 bg-[radial-gradient(ellipse_at_center,transparent_40%,#040406_95%)]" />
-        {/* Subtle grid */}
         <div className="absolute inset-0 opacity-[0.07] bg-[linear-gradient(to_right,#ffffff_1px,transparent_1px),linear-gradient(to_bottom,#ffffff_1px,transparent_1px)] bg-[size:32px_32px]" />
 
-        {/* SVG Map — fills the container, preserving aspect ratio */}
         <svg
           viewBox={IndiaMap.viewBox}
           className="w-full h-full"
           style={{ display: "block" }}
         >
-          {/* State paths */}
           {IndiaMap.locations.map((loc: { id: string; path: string }) => (
             <path
               key={loc.id}
@@ -168,7 +157,6 @@ export function ThreatMap() {
             />
           ))}
 
-          {/* Center markers */}
           {filtered.map((center) => {
             const cfg = STATUS_CONFIG[center.status];
             const { x, y } = latLngToSvg(center.lat, center.lng);
@@ -183,7 +171,6 @@ export function ThreatMap() {
                 onMouseLeave={() => setHoveredCenter(null)}
                 onClick={() => setSelectedCenter(center)}
               >
-                {/* Outer pulse ring for compromised */}
                 {center.status === "compromised" && (
                   <circle
                     r={isPulsing ? 12 : 7}
@@ -196,7 +183,6 @@ export function ThreatMap() {
                     }}
                   />
                 )}
-                {/* Secondary ring for investigating */}
                 {center.status === "investigating" && (
                   <circle
                     r={5}
@@ -205,7 +191,6 @@ export function ThreatMap() {
                     strokeWidth="0.8"
                   />
                 )}
-                {/* Core dot */}
                 <circle
                   r={isPulsing ? cfg.dotSize + 2 : cfg.dotSize}
                   fill={cfg.fill}
@@ -223,7 +208,17 @@ export function ThreatMap() {
           })}
         </svg>
 
-        {/* Hover Tooltip — pinned to bottom center */}
+        {centers.length === 0 && (
+          <div className="absolute inset-0 z-20 flex items-center justify-center pointer-events-none">
+            <div className="border border-white/10 bg-black/80 px-6 py-4 text-center backdrop-blur-md">
+              <div className="text-xs uppercase tracking-[0.2em] text-white/50">No Evidence Markers</div>
+              <p className="text-[11px] text-white/35 mt-2 max-w-xs">
+                Map markers appear only when forensic evidence identifies an examination center.
+              </p>
+            </div>
+          </div>
+        )}
+
         <AnimatePresence>
           {hoveredCenter && (
             <motion.div
@@ -270,7 +265,6 @@ export function ThreatMap() {
         </AnimatePresence>
       </div>
 
-      {/* Legend */}
       <div className="flex items-center gap-8 px-5 py-2.5 border-t border-white/5 bg-black/50 shrink-0">
         <div className="flex items-center gap-2">
           <div className="w-2.5 h-2.5 rounded-full bg-white/90 shadow-[0_0_6px_rgba(255,255,255,0.7)]" />
@@ -286,7 +280,6 @@ export function ThreatMap() {
         </div>
       </div>
 
-      {/* Intelligence Side Panel */}
       <AnimatePresence>
         {selectedCenter && (
           <motion.div
@@ -314,7 +307,6 @@ export function ThreatMap() {
             </div>
 
             <div className="flex-1 overflow-y-auto p-4 space-y-5">
-              {/* Status */}
               <div className={`flex items-center justify-between p-3 border ${
                 selectedCenter.status === "compromised"
                   ? "border-white/20 bg-white/5"
@@ -343,7 +335,6 @@ export function ThreatMap() {
                 <span className="text-xs font-mono text-white/30">Risk: {selectedCenter.risk}/100</span>
               </div>
 
-              {/* Details */}
               <div>
                 <div className="text-[10px] uppercase tracking-widest text-white/20 font-mono mb-2">
                   Center Details
@@ -362,7 +353,6 @@ export function ThreatMap() {
                 ))}
               </div>
 
-              {/* Metrics */}
               <div>
                 <div className="text-[10px] uppercase tracking-widest text-white/20 font-mono mb-2">
                   Threat Metrics
@@ -387,7 +377,6 @@ export function ThreatMap() {
                 </div>
               </div>
 
-              {/* Risk Bar */}
               <div>
                 <div className="flex justify-between text-[10px] font-mono text-white/25 mb-1.5">
                   <span className="uppercase tracking-widest">Risk Level</span>
@@ -410,7 +399,6 @@ export function ThreatMap() {
         )}
       </AnimatePresence>
 
-      {/* Pulse keyframes */}
       <style>{`
         @keyframes pulse-ring {
           0%   { r: 6; opacity: 0.5; }

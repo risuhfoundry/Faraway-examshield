@@ -1,41 +1,24 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { Crosshair, AlertOctagon, Activity, RadioTower, FileUp, ShieldAlert } from "lucide-react";
-import type { EvidenceListResponse } from "@/lib/evidence-types";
 import { formatEvidenceTime } from "@/lib/evidence-format";
+import { useEvidenceFeed } from "@/lib/use-evidence-feed";
 
 export default function ThreatIntelligence() {
-  const [data, setData] = useState<EvidenceListResponse | null>(null);
+  const { data } = useEvidenceFeed({ intervalMs: 5000 });
 
-  useEffect(() => {
-    let active = true;
-    async function load() {
-      try {
-        const res = await fetch("/evidence", { cache: "no-store" });
-        if (!res.ok) return;
-        const payload = (await res.json()) as EvidenceListResponse;
-        if (active) setData(payload);
-      } catch {}
-    }
-    load();
-    const interval = window.setInterval(load, 5000);
-    return () => { active = false; window.clearInterval(interval); };
-  }, []);
-
-  const activity = data?.activity ?? [];
-  const alerts = data?.alerts ?? [];
-  const reports = data?.forensicReports ?? [];
-  const evidence = data?.evidence ?? [];
+  const activity = data.activity;
+  const alerts = data.alerts;
+  const reports = data.forensicReports;
   const confirmed = reports.filter((r) => r.status === "investigation-complete" && r.finalConfidence > 80);
   const openAlerts = alerts.filter((a) => a.status === "open");
 
   const riskBars = (() => {
     const bars: number[] = [];
-    const completed = data?.stats.completed ?? 0;
-    const pending = data?.stats.pendingAnalysis ?? 0;
-    const failed = data?.stats.failed ?? 0;
+    const completed = data.stats.completed;
+    const pending = data.stats.pendingAnalysis;
+    const failed = data.stats.failed;
     for (let i = 0; i < 24; i++) {
       const hour = Math.sin(i * 0.5 + completed * 0.1) * 30 + 40;
       bars.push(Math.max(5, Math.min(95, Math.round(hour + (i % 3 === 0 ? failed * 5 : 0) + (i % 5 === 0 ? pending * 3 : 0)))));

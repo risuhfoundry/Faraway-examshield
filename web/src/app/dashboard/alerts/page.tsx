@@ -1,62 +1,14 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo } from "react";
 import { motion } from "framer-motion";
 import { AlertTriangle, MessageSquare, ShieldBan } from "lucide-react";
-import type { AlertRecord, EvidenceListResponse } from "@/lib/evidence-types";
-import { formatEvidenceDateTime, formatEvidenceTime } from "@/lib/evidence-format";
-
-const emptyState: EvidenceListResponse = {
-  evidence: [],
-  activity: [],
-  jobs: [],
-  attributions: [],
-  watermarks: [],
-  forensicReports: [],
-  telegramEvents: [],
-  alerts: [],
-  stats: {
-    totalEvidence: 0,
-    pendingAnalysis: 0,
-    processing: 0,
-    completed: 0,
-    failed: 0,
-  },
-};
+import type { AlertRecord } from "@/lib/evidence-types";
+import { formatDetectionScore, formatEvidenceDateTime, formatEvidenceTime } from "@/lib/evidence-format";
+import { useEvidenceFeed } from "@/lib/use-evidence-feed";
 
 export default function AlertCenter() {
-  const [data, setData] = useState<EvidenceListResponse>(emptyState);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    let active = true;
-
-    async function loadAlerts() {
-      try {
-        const response = await fetch("/evidence", { cache: "no-store" });
-        if (!response.ok) {
-          return;
-        }
-
-        const payload = (await response.json()) as EvidenceListResponse;
-        if (active) {
-          setData(payload);
-        }
-      } finally {
-        if (active) {
-          setLoading(false);
-        }
-      }
-    }
-
-    loadAlerts();
-    const interval = window.setInterval(loadAlerts, 3000);
-
-    return () => {
-      active = false;
-      window.clearInterval(interval);
-    };
-  }, []);
+  const { data, loading } = useEvidenceFeed({ intervalMs: 3000 });
 
   const criticalAlerts = useMemo(
     () => data.alerts.filter((alert) => alert.risk === "critical"),
@@ -123,10 +75,12 @@ export default function AlertCenter() {
             <h3 className="text-sm font-semibold uppercase tracking-[0.16em] text-white/60 mb-5">
               Latest Telegram Intake
             </h3>
-            {data.telegramEvents.slice(0, 4).map((event) => (
+            {data.telegramEvents.slice(0, 4).map((event) => {
+              const evidence = data.evidence.find((item) => item.evidenceId === event.evidenceId);
+              return (
               <div key={event.eventId} className="border-t border-white/10 py-3 first:border-t-0 first:pt-0">
                 <div className="flex items-center justify-between gap-3">
-                  <span className="text-xs font-mono text-white">{event.evidenceId ?? "TEXT"}</span>
+                  <span className="text-xs font-mono text-white">{event.evidenceId ?? "NO-EVIDENCE"}</span>
                   <span className="text-[10px] uppercase tracking-widest text-white/40">
                     {formatEvidenceTime(event.timestamp)}
                   </span>
@@ -134,8 +88,20 @@ export default function AlertCenter() {
                 <div className="text-xs text-white/45 mt-1 truncate">
                   {event.filename ?? event.text ?? event.chatId}
                 </div>
+                <div className="flex items-center justify-between gap-3 mt-2 text-[10px] uppercase tracking-widest text-white/35">
+                  <span>
+                    {formatDetectionScore(
+                      event.detectionScore ?? evidence?.detectionScore ?? null,
+                      event.detectionMaxScore ?? evidence?.detectionMaxScore ?? null,
+                    )}
+                  </span>
+                  <span>
+                    {event.alertSent || evidence?.telegramAlertSent ? "Alert Sent" : evidence ? "Processed" : "Logged"}
+                  </span>
+                </div>
               </div>
-            ))}
+              );
+            })}
             {!loading && data.telegramEvents.length === 0 && (
               <div className="border border-dashed border-white/10 p-6 text-center">
                 <div className="text-sm uppercase tracking-widest text-white/60">

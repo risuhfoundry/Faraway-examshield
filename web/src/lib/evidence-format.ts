@@ -1,9 +1,34 @@
 import type {
   AnalysisJobStatus,
+  EvidenceRecord,
   EvidenceSource,
   EvidenceStatus,
   OcrStatus,
 } from "./evidence-types";
+
+export function isTextEvidence(evidence: Pick<EvidenceRecord, "fileType"> | null | undefined) {
+  return evidence?.fileType === "text/plain";
+}
+
+export function formatDetectionScore(
+  score: number | null | undefined,
+  maxScore: number | null | undefined,
+) {
+  if (score === null || score === undefined || !maxScore) {
+    return "Pending";
+  }
+  return `${score}/${maxScore}`;
+}
+
+export function detectionPercent(
+  score: number | null | undefined,
+  maxScore: number | null | undefined,
+) {
+  if (score === null || score === undefined || !maxScore) {
+    return null;
+  }
+  return Math.round((score / maxScore) * 100);
+}
 
 export function formatEvidenceStatus(status: EvidenceStatus) {
   const labels: Record<EvidenceStatus, string> = {
@@ -25,6 +50,7 @@ export function formatOcrStatus(status: OcrStatus) {
     processing: "Processing",
     completed: "Completed",
     failed: "Failed",
+    "not-applicable": "Not Applicable",
   };
 
   return labels[status];

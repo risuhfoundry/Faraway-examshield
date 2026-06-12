@@ -24,10 +24,10 @@ KEYWORD_PATTERNS: list[tuple[str, int, str, str]] = [
     (r"\bquestion\s*paper\s+(leaked?|pdf)\b", 9, "leak", "Question paper leak"),
     (r"\b(exam|paper)\s*(leaked?|hacked|compromised)\b", 9, "leak", "Exam compromise"),
     (r"\bleaked\s*(paper|answer|solution|key)\b", 8, "leak", "Leaked content"),
-    (r"\bsend\s*(me?|the)?\s*(answer|solution|paper|key)\b", 7, "cheat", "Requesting answers"),
-    (r"\bshare\s*(the)?\s*(answer|solution|paper|key)\b", 7, "cheat", "Sharing answers"),
+    (r"\bsend\s+(me\s+)?(the\s+)?(answer|solution|paper|key)\b", 7, "cheat", "Requesting answers"),
+    (r"\bshare\s+(the\s+)?(answer|solution|paper|key)\b", 7, "cheat", "Sharing answers"),
     (r"\bcheating\b", 6, "cheat", "Mention of cheating"),
-    (r"\b(copy|spread)\s*(me?|the )?\b", 6, "cheat", "Copying/cheating"),
+    (r"\b(copy|spread)\s+(me\s+)?(the\s+)?(answer|solution|paper|key)\b", 6, "cheat", "Copying/cheating"),
     (r"\b(private|secret)\s*(group|channel)\b", 5, "shady", "Secret group mention"),
     # PDF / file sharing
     (r"\bpdf\s*(file)?\b", 5, "shady", "PDF mention"),
@@ -87,10 +87,11 @@ def scan_text(text: str | None) -> dict[str, Any]:
                     "position": match.start(),
                 })
 
-    # 2. Fuzzy keyword catching (misspellings)
+    # 2. Fuzzy keyword catching (misspellings) — word-boundary only
     for canonical, variants in FUZZY_KEYWORDS:
         for variant in variants:
-            for match in re.finditer(re.escape(variant), lower):
+            pattern = rf"\b{re.escape(variant)}\b"
+            for match in re.finditer(pattern, lower):
                 key = f"fuzzy:{canonical}:{match.start()}"
                 if key not in seen:
                     seen.add(key)
@@ -98,7 +99,7 @@ def scan_text(text: str | None) -> dict[str, Any]:
                         "type": "fuzzy",
                         "text": match.group(0),
                         "canonical": canonical,
-                        "weight": 5,  # Lower weight for fuzzy matches
+                        "weight": 5,
                         "category": "general",
                         "description": f"Misspelled variant of '{canonical}'",
                         "position": match.start(),
@@ -164,12 +165,22 @@ def extract_urls(text: str) -> list[dict[str, Any]]:
 
 
 def calculate_score(matches: list[dict[str, Any]]) -> float:
-    """Calculate a risk score from 0-50 based on matches."""
+    """Calculate a risk score from 0-50 based on unique weighted signals."""
     if not matches:
         return 0.0
 
-    total = sum(m["weight"] for m in matches)
-    # Diminishing returns for many matches
+    # Use the strongest signal per category so benign overlap cannot inflate every message.
+    category_best: dict[str, int] = {}
+    uncategorized = 0
+    for match in matches:
+        weight = int(match.get("weight") or 0)
+        category = str(match.get("category") or "")
+        if category:
+            category_best[category] = max(category_best.get(category, 0), weight)
+        else:
+            uncategorized += weight
+
+    total = sum(category_best.values()) + uncategorized
     if total > 30:
         total = 30 + (total - 30) * 0.3
 

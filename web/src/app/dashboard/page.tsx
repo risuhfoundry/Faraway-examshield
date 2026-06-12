@@ -1,15 +1,14 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { Activity, ShieldAlert, Server, AlertTriangle, FileUp } from "lucide-react";
-import type { EvidenceListResponse } from "@/lib/evidence-types";
 import {
   formatEvidenceSource,
   formatEvidenceStatus,
   formatEvidenceTime,
 } from "@/lib/evidence-format";
 import { ThreatMap } from "@/components/sections/ThreatMap";
+import { useEvidenceFeed } from "@/lib/use-evidence-feed";
 
 
 const containerVariants = {
@@ -28,12 +27,17 @@ const itemVariants = {
 };
 
 export default function Dashboard() {
-  const [evidenceData, setEvidenceData] = useState<EvidenceListResponse | null>(null);
-  const [centerCount, setCenterCount] = useState(0);
+  const { data: evidenceData } = useEvidenceFeed({ intervalMs: 3000 });
 
-  const criticalAlerts = evidenceData?.alerts.filter((alert) => alert.risk === "critical").length ?? 0;
-  const telegramEvents = evidenceData?.telegramEvents.length ?? 0;
-  const totalEvidence = evidenceData?.stats.totalEvidence ?? 0;
+  const criticalAlerts = evidenceData.alerts.filter((alert) => alert.risk === "critical").length;
+  const telegramEvents = evidenceData.telegramEvents.length;
+  const totalEvidence = evidenceData.stats.totalEvidence;
+  const centerCount = new Set(
+    [
+      ...evidenceData.forensicReports.map((report) => report.centerCode),
+      ...evidenceData.attributions.map((item) => item.centerCode),
+    ].filter(Boolean),
+  ).size;
 
   const stats = [
     { label: "Active Exams", value: String(totalEvidence), trend: totalEvidence > 0 ? "Live" : "Clear", icon: Activity },
@@ -46,27 +50,6 @@ export default function Dashboard() {
     { label: "Telegram Events", value: String(telegramEvents), trend: "Live", icon: ShieldAlert },
     { label: "Active Centers", value: String(centerCount || "—"), trend: centerCount > 0 ? "Live" : "Idle", icon: Server },
   ];
-
-  useEffect(() => {
-    let active = true;
-
-    async function loadEvidence() {
-      const response = await fetch("/evidence", { cache: "no-store" });
-      if (!response.ok) return;
-      const payload = (await response.json()) as EvidenceListResponse;
-      if (!active) return;
-      setEvidenceData(payload);
-
-      const uniqueCenters = new Set(
-        payload.evidence.map((e) => e.telegramChatId).filter(Boolean)
-      );
-      setCenterCount(uniqueCenters.size);
-    }
-
-    loadEvidence();
-    const interval = window.setInterval(loadEvidence, 3000);
-    return () => { active = false; window.clearInterval(interval); };
-  }, []);
 
   return (
     <motion.div
@@ -104,7 +87,7 @@ export default function Dashboard() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* National Threat Map */}
         <motion.div variants={itemVariants} className="hidden lg:flex lg:col-span-2 glass-panel h-[560px] flex-col relative overflow-hidden">
-          <ThreatMap />
+          <ThreatMap evidenceData={evidenceData} />
         </motion.div>
 
         {/* Activity Feed */}
@@ -113,7 +96,7 @@ export default function Dashboard() {
              <h3 className="text-xs font-semibold uppercase tracking-[0.1em] text-white/50">Live Monitoring Feed</h3>
           </div>
           <div className="flex-1 overflow-y-auto p-4 space-y-4">
-            {evidenceData?.activity.map((event) => {
+            {evidenceData.activity.map((event) => {
               const evidence = evidenceData.evidence.find((item) => item.evidenceId === event.evidenceId);
 
               return (
@@ -143,7 +126,7 @@ export default function Dashboard() {
               );
             })}
 
-            {(!evidenceData || evidenceData.activity.length === 0) && (
+            {evidenceData.activity.length === 0 && (
               <div className="h-full flex flex-col items-center justify-center text-center text-white/40 gap-4 px-6">
                 <FileUp className="w-8 h-8 text-white/25" />
                 <div>

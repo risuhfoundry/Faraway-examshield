@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import {
   AlertTriangle,
@@ -22,21 +22,23 @@ import type {
   AnalysisJobResponse,
   AttributionRecord,
   EvidenceActivityEvent,
-  EvidenceListResponse,
   EvidenceRecord,
   EvidenceUploadResponse,
   ForensicReport,
   WatermarkExtractionRecord,
 } from "@/lib/evidence-types";
 import {
+  formatDetectionScore,
   formatEvidenceDateTime,
   formatEvidenceSource,
   formatEvidenceStatus,
   formatEvidenceTime,
   formatOcrStatus,
+  isTextEvidence,
 } from "@/lib/evidence-format";
 import { parseJsonResponse, waitForAnalysisJob } from "@/lib/analysis-client";
 import { cn } from "@/lib/utils";
+import { useEvidenceFeed } from "@/lib/use-evidence-feed";
 
 const acceptedTypes = ["image/jpeg", "image/png", "application/pdf"];
 const tabs = ["Visual Analysis", "OCR Results", "Attribution", "Timeline"] as const;
@@ -62,28 +64,14 @@ export default function InvestigationWorkspace() {
   const [selectedEvidenceId, setSelectedEvidenceId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [received, setReceived] = useState<EvidenceRecord | null>(null);
-  const [evidenceData, setEvidenceData] = useState<EvidenceListResponse | null>(null);
+  const { data: evidenceData, refresh: refreshEvidence } = useEvidenceFeed({ intervalMs: 5000 });
 
   const loadEvidence = useCallback(async () => {
-    const response = await fetch("/evidence", { cache: "no-store" });
-    if (!response.ok) {
-      return;
-    }
-    setEvidenceData((await response.json()) as EvidenceListResponse);
-  }, []);
-
-  useEffect(() => {
-    const timer = window.setTimeout(() => {
-      loadEvidence();
-    }, 0);
-
-    return () => {
-      window.clearTimeout(timer);
-    };
-  }, [loadEvidence]);
+    await refreshEvidence(true);
+  }, [refreshEvidence]);
 
   const selectedEvidence = useMemo(() => {
-    if (!evidenceData?.evidence.length) {
+    if (!evidenceData.evidence.length) {
       return received;
     }
 
@@ -94,7 +82,7 @@ export default function InvestigationWorkspace() {
   }, [evidenceData, received, selectedEvidenceId]);
 
   const selectedTimeline = useMemo(() => {
-    if (!evidenceData || !selectedEvidence) {
+    if (!selectedEvidence) {
       return [];
     }
 
@@ -104,7 +92,7 @@ export default function InvestigationWorkspace() {
   }, [evidenceData, selectedEvidence]);
 
   const selectedAttribution = useMemo(() => {
-    if (!evidenceData || !selectedEvidence) {
+    if (!selectedEvidence) {
       return null;
     }
 
@@ -115,7 +103,7 @@ export default function InvestigationWorkspace() {
   }, [evidenceData, selectedEvidence]);
 
   const selectedWatermark = useMemo(() => {
-    if (!evidenceData || !selectedEvidence) {
+    if (!selectedEvidence) {
       return null;
     }
 
@@ -126,7 +114,7 @@ export default function InvestigationWorkspace() {
   }, [evidenceData, selectedEvidence]);
 
   const selectedForensicReport = useMemo(() => {
-    if (!evidenceData || !selectedEvidence) {
+    if (!selectedEvidence) {
       return null;
     }
 
@@ -357,7 +345,7 @@ export default function InvestigationWorkspace() {
           )}
 
           <InvestigationQueue
-            evidence={evidenceData?.evidence ?? []}
+            evidence={evidenceData.evidence}
             selectedEvidenceId={selectedEvidence?.evidenceId ?? null}
             analyzingId={analyzingId}
             onSelect={(evidenceId) => {
@@ -384,9 +372,10 @@ function ExecutiveSummaryPanel({
   forensicReport: ForensicReport | null;
   analyzing: boolean;
 }) {
+  const textEvidence = isTextEvidence(evidence);
   const leakConfirmed = forensicReport?.status === "investigation-complete" && forensicReport.finalConfidence > 80;
-  const confidence = forensicReport?.finalConfidence ?? attribution?.finalConfidence ?? null;
-  const risk = forensicReport?.riskLevel ?? attribution?.status ?? "unknown";
+  const confidence = forensicReport?.finalConfidence ?? attribution?.finalConfidence ?? evidence?.ocrConfidence ?? null;
+  const risk = forensicReport?.riskLevel ?? attribution?.status ?? evidence?.riskLevel ?? "unknown";
 
   if (!evidence) {
     return (
@@ -423,7 +412,15 @@ function ExecutiveSummaryPanel({
               <ShieldCheck className="w-7 h-7 text-white/60" />
             )}
             <h2 className="text-4xl font-heading uppercase tracking-widest text-white">
-              {leakConfirmed ? "Leak Confirmed" : analyzing ? "Analysis Running" : "Awaiting Confirmation"}
+              {leakConfirmed
+                ? "Leak Confirmed"
+                : analyzing
+                  ? "Analysis Running"
+                  : textEvidence && evidence.status === "completed"
+                    ? evidence.telegramAlertSent
+                      ? "Telegram Alert Sent"
+                      : "Text Evidence Processed"
+                    : "Awaiting Confirmation"}
             </h2>
           </div>
           <p className="text-sm text-white/45 mt-3 break-all">
@@ -456,7 +453,14 @@ function WorkflowRail({
   stage: WorkflowStage;
   evidence: EvidenceRecord | null;
 }) {
-  const effectiveStage = stage ?? (evidence?.ocrStatus === "completed" ? "complete" : null);
+  const textEvidence = isTextEvidence(evidence);
+  const effectiveStage =
+    stage ??
+    (textEvidence && evidence?.status === "completed"
+      ? "complete"
+      : evidence?.ocrStatus === "completed"
+        ? "complete"
+        : null);
   const activeIndex = effectiveStage
     ? workflowStages.findIndex((item) => item.id === effectiveStage)
     : -1;
@@ -645,8 +649,11 @@ function VisualAnalysisPanel({
     return <EmptyPanel icon={FileUp} text="No active investigation. Waiting for evidence intake." />;
   }
 
-  const isCompleted = evidence.ocrStatus === "completed";
-  const canRun = evidence.ocrStatus !== "processing" && !analyzing;
+  const textEvidence = isTextEvidence(evidence);
+  const isCompleted = textEvidence
+    ? evidence.status === "completed"
+    : evidence.ocrStatus === "completed";
+  const canRun = !textEvidence && evidence.ocrStatus !== "processing" && !analyzing;
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-5 gap-6 h-full">
@@ -690,6 +697,24 @@ function VisualAnalysisPanel({
               label="Confidence"
               value={evidence.ocrConfidence === null ? "Pending" : `${evidence.ocrConfidence}%`}
             />
+            {textEvidence && (
+              <>
+                <InfoBlock
+                  label="Detection"
+                  value={formatDetectionScore(evidence.detectionScore, evidence.detectionMaxScore)}
+                />
+                <InfoBlock
+                  label="Telegram"
+                  value={
+                    evidence.telegramAlertSent
+                      ? "Alert Sent"
+                      : evidence.status === "completed"
+                        ? "Processed"
+                        : "Pending"
+                  }
+                />
+              </>
+            )}
           </div>
         </div>
 
@@ -711,11 +736,15 @@ function VisualAnalysisPanel({
           ) : (
             <Play className="w-4 h-4" />
           )}
-          {analyzing || evidence.ocrStatus === "processing"
-            ? "Analyzing"
-            : isCompleted
-              ? "Run Again"
-              : "Run Analysis"}
+          {textEvidence
+            ? isCompleted
+              ? "Text Evidence Ready"
+              : "Processing Text"
+            : analyzing || evidence.ocrStatus === "processing"
+              ? "Analyzing"
+              : isCompleted
+                ? "Run Again"
+                : "Run Analysis"}
         </button>
       </div>
     </div>
@@ -735,6 +764,7 @@ function OcrResultsPanel({
     return <EmptyPanel icon={ScrollText} text="No OCR results. All monitored channels are clear." />;
   }
 
+  const textEvidence = isTextEvidence(evidence);
   const text = evidence.ocrText?.trim();
 
   return (
@@ -753,6 +783,12 @@ function OcrResultsPanel({
           label="Completed"
           value={evidence.analysisCompletedAt ? formatEvidenceTime(evidence.analysisCompletedAt) : "Pending"}
         />
+        {textEvidence && (
+          <InfoMetric
+            label="Detection"
+            value={formatDetectionScore(evidence.detectionScore, evidence.detectionMaxScore)}
+          />
+        )}
       </div>
 
       <div className="flex-1 border border-white/10 bg-black p-5 min-h-[360px]">
@@ -765,7 +801,12 @@ function OcrResultsPanel({
           </span>
         </div>
 
-        {analyzing || evidence.ocrStatus === "processing" || evidence.ocrStatus === "queued" ? (
+        {textEvidence && evidence.status !== "completed" ? (
+          <div className="h-full flex flex-col items-center justify-center gap-4 text-white/55">
+            <Loader2 className="w-8 h-8 animate-spin" />
+            <div className="text-sm uppercase tracking-widest">Processing Telegram text evidence...</div>
+          </div>
+        ) : analyzing || evidence.ocrStatus === "processing" || evidence.ocrStatus === "queued" ? (
           <div className="h-full flex flex-col items-center justify-center gap-4 text-white/55">
             <Loader2 className="w-8 h-8 animate-spin" />
             <div className="text-sm uppercase tracking-widest">Analyzing...</div>
@@ -857,6 +898,17 @@ function AttributionPanel({
 }) {
   if (!evidence) {
     return <EmptyPanel icon={Fingerprint} text="No attribution report. Waiting for examination intelligence." />;
+  }
+
+  const textEvidence = isTextEvidence(evidence);
+
+  if (textEvidence && evidence.status !== "completed") {
+    return (
+      <div className="h-full min-h-[440px] border border-white/10 bg-black flex flex-col items-center justify-center gap-4 text-white/55">
+        <Loader2 className="w-8 h-8 animate-spin" />
+        <div className="text-sm uppercase tracking-widest">Running text attribution...</div>
+      </div>
+    );
   }
 
   if (analyzing || evidence.ocrStatus === "processing" || evidence.ocrStatus === "queued") {
@@ -1032,7 +1084,12 @@ function InvestigationQueue({
       </h2>
       <div className="space-y-3">
         {evidence.slice(0, 6).map((item) => {
-          const Icon = item.fileType === "application/pdf" ? FileText : FileImage;
+          const Icon =
+            item.fileType === "text/plain"
+              ? ScrollText
+              : item.fileType === "application/pdf"
+                ? FileText
+                : FileImage;
           const isActive = item.evidenceId === selectedEvidenceId;
 
           return (
@@ -1060,7 +1117,15 @@ function InvestigationQueue({
                         isActive ? "text-black/55" : "text-white/40",
                       )}
                     >
-                      {analyzingId === item.evidenceId ? "Analyzing" : formatOcrStatus(item.ocrStatus)}
+                      {analyzingId === item.evidenceId
+                        ? "Analyzing"
+                        : isTextEvidence(item)
+                          ? item.status === "completed"
+                            ? item.telegramAlertSent
+                              ? "Alert Sent"
+                              : "Completed"
+                            : "Pending"
+                          : formatOcrStatus(item.ocrStatus)}
                     </span>
                   </div>
                   <div className={cn("text-sm mt-2 truncate", isActive ? "text-black/75" : "text-white/80")}>

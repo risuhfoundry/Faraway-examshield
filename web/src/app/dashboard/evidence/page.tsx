@@ -1,112 +1,27 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { CheckCircle2, FileStack, Hourglass, Loader2, XCircle, Upload, X, RefreshCw } from "lucide-react";
-import type { EvidenceListResponse } from "@/lib/evidence-types";
 import {
+  detectionPercent,
+  formatDetectionScore,
   formatEvidenceDateTime,
   formatEvidenceSource,
   formatEvidenceStatus,
   formatOcrStatus,
+  isTextEvidence,
 } from "@/lib/evidence-format";
 import { cn } from "@/lib/utils";
-
-const emptyState: EvidenceListResponse = {
-  evidence: [],
-  activity: [],
-  jobs: [],
-  attributions: [],
-  watermarks: [],
-  forensicReports: [],
-  telegramEvents: [],
-  alerts: [],
-  stats: {
-    totalEvidence: 0,
-    pendingAnalysis: 0,
-    processing: 0,
-    completed: 0,
-    failed: 0,
-  },
-};
-
-const CACHE_KEY = "examshield-evidence-cache";
-const CACHE_TTL = 30000;
-
-function getCachedData(): EvidenceListResponse | null {
-  if (typeof window === "undefined") return null;
-  try {
-    const cached = localStorage.getItem(CACHE_KEY);
-    if (!cached) return null;
-    const { data, timestamp } = JSON.parse(cached);
-    if (Date.now() - timestamp > CACHE_TTL) return null;
-    return data;
-  } catch {
-    return null;
-  }
-}
-
-function setCachedData(data: EvidenceListResponse) {
-  if (typeof window === "undefined") return;
-  try {
-    localStorage.setItem(CACHE_KEY, JSON.stringify({ data, timestamp: Date.now() }));
-  } catch {
-  }
-}
+import { useEvidenceFeed } from "@/lib/use-evidence-feed";
 
 export default function EvidenceCenter() {
-  const [data, setData] = useState<EvidenceListResponse>(() => getCachedData() ?? emptyState);
-  const [loading, setLoading] = useState(true);
+  const { data, loading, refreshing, refresh } = useEvidenceFeed({ intervalMs: 5000 });
   const [uploading, setUploading] = useState(false);
   const [uploadQueue, setUploadQueue] = useState<string[]>([]);
-  const [refreshing, setRefreshing] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const activeRef = useRef(true);
-  const intervalRef = useRef<number | NodeJS.Timeout | null>(null);
 
-  async function loadEvidence(force = false) {
-    if (!activeRef.current) return;
-    try {
-      if (force) setRefreshing(true);
-      const response = await fetch("/evidence", { 
-        cache: "no-store",
-        headers: { "Cache-Control": "no-cache" }
-      });
-      if (!response.ok) {
-        throw new Error("Unable to load evidence.");
-      }
-      const payload = (await response.json()) as EvidenceListResponse;
-      if (activeRef.current) {
-        setData(payload);
-        setCachedData(payload);
-      }
-    } catch (err) {
-      console.error("Failed to load evidence:", err);
-    } finally {
-      if (activeRef.current) {
-        setLoading(false);
-        setRefreshing(false);
-      }
-    }
-  }
-
-  useEffect(() => {
-    activeRef.current = true;
-    const cached = getCachedData();
-    if (cached) {
-      setData(cached);
-      setLoading(false);
-    }
-    loadEvidence();
-    intervalRef.current = window.setInterval(() => loadEvidence(), 5000);
-
-    return () => {
-      activeRef.current = false;
-      if (intervalRef.current) window.clearInterval(intervalRef.current);
-    };
-  }, []);
-
-  const handleRefresh = () => loadEvidence(true);
+  const handleRefresh = () => refresh(true);
 
   async function handleFileUpload(files: FileList | null) {
     if (!files || files.length === 0) return;
@@ -128,7 +43,7 @@ export default function EvidenceCenter() {
     setUploadQueue((prev) => [...prev, ...names]);
     setUploading(false);
     setTimeout(() => setUploadQueue([]), 4000);
-    loadEvidence(true);
+    refresh(true);
 
     if (fileInputRef.current) fileInputRef.current.value = "";
   }
@@ -237,6 +152,8 @@ export default function EvidenceCenter() {
             const forensicReport = data.forensicReports.find(
               (report) => report.evidenceId === item.evidenceId,
             );
+            const textEvidence = isTextEvidence(item);
+            const detectionPct = detectionPercent(item.detectionScore, item.detectionMaxScore);
 
             return (
             <motion.div
@@ -281,37 +198,82 @@ export default function EvidenceCenter() {
                 <div>
                   <div className="text-white/35 uppercase tracking-widest mb-1 text-[10px]">Confidence</div>
                   <div className="text-white/80 text-xs sm:text-sm">
-                    {item.ocrConfidence === null ? "Pending" : `${item.ocrConfidence}%`}
+                    {item.ocrConfidence === null
+                      ? textEvidence && item.status === "completed"
+                        ? detectionPct === null
+                          ? "N/A"
+                          : `${detectionPct}%`
+                        : textEvidence
+                          ? "Scanning"
+                          : "Pending"
+                      : `${item.ocrConfidence}%`}
                   </div>
                 </div>
                 <div>
                   <div className="text-white/35 uppercase tracking-widest mb-1 text-[10px]">Runtime</div>
                   <div className="text-white/80 text-xs sm:text-sm">
-                    {item.ocrProcessingTimeMs === null ? "Pending" : `${item.ocrProcessingTimeMs} ms`}
+                    {textEvidence
+                      ? item.status === "completed"
+                        ? "Instant"
+                        : "Pending"
+                      : item.ocrProcessingTimeMs === null
+                        ? "Pending"
+                        : `${item.ocrProcessingTimeMs} ms`}
                   </div>
                 </div>
                 <div>
                   <div className="text-white/35 uppercase tracking-widest mb-1 text-[10px]">Attribution</div>
                   <div className="text-white/80 text-xs sm:text-sm">
-                    {attribution?.matchedPaperId ?? (attribution ? "No Match" : "Pending")}
+                    {attribution?.matchedPaperId ??
+                      (attribution ? "No Match" : textEvidence ? (item.status === "completed" ? "Text Scan" : "Pending") : "Pending")}
                   </div>
                 </div>
                 <div>
                   <div className="text-white/35 uppercase tracking-widest mb-1 text-[10px]">Watermark</div>
                   <div className="text-white/80 text-xs sm:text-sm">
-                    {watermark?.watermarkId ?? (watermark ? "Not Detected" : "Pending")}
+                    {textEvidence
+                      ? "N/A"
+                      : watermark?.watermarkId ?? (watermark ? "Not Detected" : "Pending")}
                   </div>
                 </div>
                 <div>
                   <div className="text-white/35 uppercase tracking-widest mb-1 text-[10px]">Final</div>
                   <div className="text-white/80 text-xs sm:text-sm">
-                    {forensicReport ? `${forensicReport.finalConfidence}%` : "Pending"}
+                    {forensicReport
+                      ? `${forensicReport.finalConfidence}%`
+                      : textEvidence
+                        ? detectionPct === null
+                          ? item.status === "completed"
+                            ? "N/A"
+                            : "Pending"
+                          : `${detectionPct}%`
+                        : "Pending"}
                   </div>
                 </div>
                 <div>
                   <div className="text-white/35 uppercase tracking-widest mb-1 text-[10px]">Center</div>
                   <div className="text-white/80 text-xs sm:text-sm">
-                    {forensicReport?.centerCode ?? attribution?.centerCode ?? "Pending"}
+                    {forensicReport?.centerCode ??
+                      attribution?.centerCode ??
+                      (textEvidence ? "N/A" : "Pending")}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-white/35 uppercase tracking-widest mb-1 text-[10px]">Detection</div>
+                  <div className="text-white/80 text-xs sm:text-sm">
+                    {formatDetectionScore(item.detectionScore, item.detectionMaxScore)}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-white/35 uppercase tracking-widest mb-1 text-[10px]">Telegram</div>
+                  <div className="text-white/80 text-xs sm:text-sm">
+                    {item.source === "telegram"
+                      ? item.telegramAlertSent
+                        ? "Alert Sent"
+                        : item.status === "completed"
+                          ? "Processed"
+                          : "Pending"
+                      : "N/A"}
                   </div>
                 </div>
               </div>

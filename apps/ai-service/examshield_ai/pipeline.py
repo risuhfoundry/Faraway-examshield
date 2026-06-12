@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 
-from .detect import is_suspicious
+from .detect import is_suspicious, scan_text
 from .store import EvidenceStore, JsonObject
 from .telegram import TelegramWebhook, _should_send_alert
 from .workers import AnalysisTask, AnalysisWorkerPool, OcrRunner
@@ -91,15 +91,38 @@ class EvidencePipeline:
                 except Exception as fail_exc:
                     logger.error("Failed to mark job %s failed: %s", job_id, fail_exc)
                 return
-            if _should_send_alert(analysis, detection):
+            combined_detection = self._combined_detection(detection, text, analysis)
+            if evidence_id:
                 try:
-                    self.telegram._send_alert(
+                    self.store._update_evidence_record(
+                        evidence_id,
+                        lambda record: {**record, **self._detection_fields(combined_detection)},
+                    )
+                    self.store._update_telegram_event_for_evidence(
+                        evidence_id,
+                        lambda event: {**event, **self._detection_event_fields(combined_detection)},
+                    )
+                except Exception as meta_exc:
+                    logger.warning("Failed to persist detection metadata for %s: %s", evidence_id, meta_exc)
+            if _should_send_alert(analysis, combined_detection):
+                try:
+                    result = self.telegram._send_alert(
                         created,
                         analysis,
-                        detection,
+                        combined_detection,
                         text or "",
                         chat_id,
                         message,
+                        store=self.store,
+                    )
+                    alert_sent = bool(result and result.get("status") == "ok")
+                    self.store._update_evidence_record(
+                        evidence_id,
+                        lambda record: {**record, "telegramAlertSent": alert_sent},
+                    )
+                    self.store._update_telegram_event_for_evidence(
+                        evidence_id,
+                        lambda event: {**event, "alertSent": alert_sent},
                     )
                 except Exception as alert_exc:
                     logger.error("Alert failed for evidence %s: %s", evidence_id, alert_exc)
@@ -151,10 +174,104 @@ class EvidencePipeline:
         chat_id: str,
         message: JsonObject,
     ) -> bool:
+        evidence = created.get("evidence") or {}
+        evidence_id = str(evidence.get("evidenceId") or "")
+        analysis: JsonObject = {}
+        alert_activity = None
+        if evidence_id:
+            try:
+                self.store._update_evidence_record(
+                    evidence_id,
+                    lambda record: {
+                        **record,
+                        "status": "analyzing",
+                        "analysisStartedAt": record.get("analysisStartedAt") or record.get("uploadedAt"),
+                    },
+                )
+                evidence = self.store.get_evidence_by_id(evidence_id)
+                analysis = self.store.run_attribution_for_evidence(
+                    evidence_id,
+                    text or "",
+                    evidence.get("ocrConfidence") if evidence else None,
+                )
+                report = analysis.get("forensicReport")
+                if report and report.get("status") == "investigation-complete":
+                    alert_result = self.store.create_critical_alert_if_needed(report, analysis.get("attribution"))
+                else:
+                    alert_result = self.store.create_detection_alert_if_needed(evidence_id, detection, report)
+                alert_activity = alert_result.get("activity")
+            except Exception as exc:
+                logger.warning("Text-only attribution failed for %s: %s", evidence_id, exc)
+
+        report = analysis.get("forensicReport") if isinstance(analysis.get("forensicReport"), dict) else None
+
         if not is_suspicious(detection):
+            if evidence_id:
+                self.store.complete_text_evidence(
+                    evidence_id,
+                    detection,
+                    alert_sent=False,
+                    forensic_report=report,
+                )
             return False
+
+        alert_sent = False
         try:
-            result = self.telegram._send_alert(created, {}, detection, text or "", chat_id, message)
-            return result is not None and result.get("status") != "failed"
+            result = self.telegram._send_alert(
+                created,
+                analysis,
+                detection,
+                text or "",
+                chat_id,
+                message,
+                store=self.store,
+            )
+            alert_sent = bool(result and result.get("status") == "ok")
         except Exception:
-            return False
+            alert_sent = False
+
+        if evidence_id:
+            try:
+                completed = self.store.complete_text_evidence(
+                    evidence_id,
+                    detection,
+                    alert_sent=alert_sent,
+                    forensic_report=report,
+                )
+                activities = [completed["activity"]]
+                if alert_activity:
+                    activities.append(alert_activity)
+                completed["activity"] = activities
+            except Exception as exc:
+                logger.warning("Failed to complete text evidence %s: %s", evidence_id, exc)
+        return alert_sent
+
+    @staticmethod
+    def _combined_detection(
+        detection: JsonObject,
+        caption_text: str | None,
+        analysis: JsonObject,
+    ) -> JsonObject:
+        evidence = analysis.get("evidence") if isinstance(analysis.get("evidence"), dict) else {}
+        ocr_text = evidence.get("ocrText") if isinstance(evidence, dict) else None
+        combined = "\n".join(
+            value.strip()
+            for value in (caption_text or "", str(ocr_text or ""))
+            if value and value.strip()
+        )
+        if not combined:
+            return detection
+        rescanned = scan_text(combined)
+        return rescanned if rescanned.get("score", 0) >= detection.get("score", 0) else detection
+
+    @staticmethod
+    def _detection_fields(detection: JsonObject) -> JsonObject:
+        from .store import detection_record_fields
+
+        return detection_record_fields(detection)
+
+    @staticmethod
+    def _detection_event_fields(detection: JsonObject) -> JsonObject:
+        from .store import detection_event_fields
+
+        return detection_event_fields(detection)

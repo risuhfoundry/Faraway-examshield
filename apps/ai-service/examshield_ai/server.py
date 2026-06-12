@@ -373,11 +373,15 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                 alert_sent = self.pipeline.process_text_only_alert(
                     created, detection, text, chat_id, message
                 )
+                latest_evidence = (
+                    self.store.get_evidence_by_id(str(created["evidence"].get("evidenceId")))
+                    or created["evidence"]
+                )
                 self._send_json(
                     {
                         "message": "Suspicious Text Captured",
                         "telegramEvent": created["telegramEvent"],
-                        "evidence": created["evidence"],
+                        "evidence": latest_evidence,
                         "detection": detection_payload,
                         "alertSent": alert_sent,
                         "activity": created["activity"],
