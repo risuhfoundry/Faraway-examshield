@@ -78,7 +78,7 @@ class TelegramWebhook:
         chat_type = str(chat.get("type") or "").lower()
         is_private = chat_type == "private"
 
-        # For group messages: only process monitored groups, never reply in group
+        # NEVER reply in groups — only monitor silently
         if not is_private:
             if not store.is_monitored_group(chat_id):
                 if chat_id == self.settings.telegram_chat_id:
@@ -89,13 +89,112 @@ class TelegramWebhook:
                         "processed": False,
                         "chatId": chat_id,
                     }
+            # Group message — process detection but NEVER send chat reply
+            text = _extract_text(message)
+            detection = scan_text(text)
+            uploaded = self._download_media(message)
+            created = store.create_telegram_event(
+                message_id=message_id,
+                chat_id=chat_id,
+                timestamp=normalize_telegram_timestamp(message.get("date")),
+                text=text,
+                file=uploaded,
+                detection=detection,
+            )
+            # Return early for group messages — no chat reply ever
+            if created["duplicate"] or not created["evidence"]:
+                return {
+                    "message": "Telegram update accepted",
+                    "processed": True,
+                    "duplicate": created["duplicate"],
+                    "evidence": created["evidence"],
+                    "detection": {
+                        "score": detection["score"],
+                        "categories": detection["categories"],
+                        "isSuspicious": is_suspicious(detection),
+                    },
+                    "alertSent": False,
+                }
+            if created["evidence"].get("fileType") == "text/plain":
+                alert_sent = False
+                if pipeline:
+                    alert_sent = pipeline.process_text_only_alert(
+                        created, detection, text, chat_id, message
+                    )
+                elif is_suspicious(detection):
+                    try:
+                        alert_result = self._send_alert(created, {}, detection, text, chat_id, message, store=store)
+                        alert_sent = _is_alert_sent(alert_result)
+                        store.complete_text_evidence(
+                            str(created["evidence"]["evidenceId"]),
+                            detection,
+                            alert_sent=alert_sent,
+                            forensic_report=None,
+                        )
+                    except Exception:
+                        alert_sent = False
+                latest_evidence = store.get_evidence_by_id(str(created["evidence"]["evidenceId"])) or created["evidence"]
+                return {
+                    "message": "Suspicious text captured",
+                    "processed": True,
+                    "duplicate": False,
+                    "evidence": latest_evidence,
+                    "detection": {
+                        "score": detection["score"],
+                        "categories": detection["categories"],
+                        "isSuspicious": is_suspicious(detection),
+                    },
+                    "alertSent": alert_sent,
+                    "activity": created["activity"],
+                }
+            if not pipeline:
+                raise RuntimeError("EvidencePipeline is required for media Telegram updates.")
+            existing_job = store.get_active_job_for_evidence(created["evidence"]["evidenceId"])
+            if existing_job:
+                return {
+                    "message": "Telegram evidence already queued for analysis",
+                    "processed": True,
+                    "duplicate": False,
+                    "evidence": created["evidence"],
+                    "job": existing_job,
+                    "detection": {
+                        "score": detection["score"],
+                        "categories": detection["categories"],
+                        "isSuspicious": is_suspicious(detection),
+                    },
+                    "alertSent": False,
+                    "activity": created["activity"],
+                }
+            job = pipeline.queue_media_analysis(
+                created=created,
+                detection=detection,
+                text=text,
+                chat_id=chat_id,
+                message=message,
+                ocr_runner=ocr_runner,
+            )
+            return {
+                "message": "Telegram evidence queued for analysis",
+                "processed": True,
+                "duplicate": False,
+                "evidence": created["evidence"],
+                "job": job,
+                "detection": {
+                    "score": detection["score"],
+                    "categories": detection["categories"],
+                    "isSuspicious": is_suspicious(detection),
+                },
+                "alertSent": False,
+                "activity": created["activity"],
+            }
 
-        # For private/direct messages: respond conversationally via LLM
+        # --- PRIVATE / DM messages only from here ---
         text = _extract_text(message)
-        if is_private and text:
-            self._handle_chat_message(chat_id, message, text)
 
-        # Extract text and run leak detection
+        # Handle private chat messages with real data
+        if text:
+            self._handle_chat_message(chat_id, message, text, store)
+
         detection = scan_text(text)
 
         # Download media if any
@@ -417,30 +516,35 @@ class TelegramWebhook:
             "parse_mode": parse_mode,
         })
 
-    def _handle_chat_message(self, chat_id: str, message: JsonObject, text: str) -> JsonObject | None:
-        """Handle private/direct messages using LLM for conversational responses."""
+    def _handle_chat_message(self, chat_id: str, message: JsonObject, text: str, store: EvidenceStore | None = None) -> JsonObject | None:
+        """Handle private/direct messages using LLM with real data from the store."""
         llm = NvidiaClient(self.settings)
         if not llm.configured or not text:
             return None
-        
+
         sender = _extract_sender(message)
-        
+        lower_text = text.lower().strip()
+
+        # Gather real data from store to give actual answers
+        data_context = _build_chat_data_context(store, lower_text)
+
         system_prompt = (
-            "You are ExamShield AI, an exam security assistant. "
-            "You are chatting with someone in a private Telegram DM. "
-            "You monitor groups for potential exam leaks and suspicious activity. "
-            "You are friendly, helpful, and professional. "
-            "Respond naturally to questions about exam security, the monitoring system, or general queries. "
-            "Keep responses concise (under 200 characters). "
-            "Use Telegram HTML formatting: <b>, <i>, <code>. "
-            "If someone asks what you do, briefly explain you monitor for exam leaks. "
-            "If someone greets you, respond warmly. "
-            "Be conversational and human-like. "
-            "Never send alerts or notifications here — this is a private chat for questions only."
+            "You are ExamShield AI, an exam security assistant chatting in a private Telegram DM. "
+            "You are friendly, casual, and helpful — like a knowledgeable colleague. "
+            "Use the REAL DATA provided below to answer questions. "
+            "Do NOT make up numbers, evidence IDs, or threat counts. "
+            "If the data shows something, report it naturally. "
+            "If there's nothing relevant, say so honestly. "
+            "Keep responses concise (under 300 characters). "
+            "Use Telegram HTML: <b>, <i>, <code>. "
+            "Be conversational and human-like, not robotic."
         )
-        
-        user_prompt = f"Message from {sender}: {text}"
-        
+
+        user_prompt = (
+            f"Data context:\n{data_context}\n\n"
+            f"User ({sender}) says: {text}"
+        )
+
         try:
             response = llm.chat_text(
                 model=self.settings.model,
@@ -448,15 +552,15 @@ class TelegramWebhook:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
-                max_tokens=200,
-                timeout=10,
+                max_tokens=300,
+                timeout=12,
             )
             cleaned = _clean_telegram_html(response)
             if cleaned:
                 return self.send_message(chat_id, cleaned, parse_mode="HTML")
         except Exception as exc:
             logger.warning("LLM chat response failed: %s", exc)
-        
+
         return None
 
     def _api_multipart(
@@ -653,3 +757,74 @@ def _should_send_alert(analysis: JsonObject, detection: JsonObject) -> bool:
     if is_suspicious(detection):
         return True
     return False
+
+
+def _build_chat_data_context(store: EvidenceStore | None, user_query: str) -> str:
+    """Build a data context string from real store data for the LLM to reference."""
+    if not store:
+        return "No store data available."
+
+    try:
+        data = store.list_evidence()
+    except Exception:
+        return "Failed to load store data."
+
+    evidence_list = data.get("evidence") or []
+    alerts = data.get("alerts") or []
+    activity = data.get("activity") or []
+    stats = data.get("stats") or {}
+
+    lines: list[str] = []
+
+    # Always include summary stats
+    lines.append(f"Total evidence items: {stats.get('totalEvidence', len(evidence_list))}")
+    lines.append(f"Total alerts: {stats.get('totalAlerts', len(alerts))}")
+
+    # If asking about threats/alerts/recent activity, include details
+    threat_keywords = ("threat", "alert", "suspicious", "leak", "detect", "risk", "incident", "danger")
+    evidence_keywords = ("evidence", "file", "upload", "document", "ocr", "scan")
+    recent_keywords = ("recent", "latest", "history", "activity", "log", "timeline")
+
+    want_threats = any(kw in user_query for kw in threat_keywords)
+    want_evidence = any(kw in user_query for kw in evidence_keywords)
+    want_recent = any(kw in user_query for kw in recent_keywords)
+
+    if want_threats and alerts:
+        lines.append("")
+        lines.append("Recent alerts:")
+        for alert in alerts[:5]:
+            eid = alert.get("evidenceId") or alert.get("id") or "?"
+            score = alert.get("score") or alert.get("detectionScore") or "?"
+            risk = alert.get("riskLevel") or alert.get("level") or "unknown"
+            created = alert.get("createdAt") or alert.get("timestamp") or ""
+            lines.append(f"- <code>{eid}</code> | score: {score} | risk: {risk} | {created[:16]}")
+
+    if want_evidence and evidence_list:
+        lines.append("")
+        lines.append("Recent evidence:")
+        for ev in evidence_list[:5]:
+            eid = ev.get("evidenceId") or "?"
+            ftype = ev.get("fileType") or "?"
+            status = ev.get("status") or "unknown"
+            source = ev.get("source") or ""
+            lines.append(f"- <code>{eid}</code> | type: {ftype} | status: {status} | source: {source}")
+
+    if want_recent and activity:
+        lines.append("")
+        lines.append("Recent activity:")
+        for act in activity[:5]:
+            act_type = act.get("type") or act.get("action") or "?"
+            desc = act.get("description") or act.get("message") or ""
+            ts = act.get("timestamp") or ""
+            lines.append(f"- {act_type}: {desc[:120]} | {ts[:16]}")
+
+    if not (want_threats or want_evidence or want_recent):
+        # Generic summary
+        if evidence_list:
+            suspicious = [e for e in evidence_list if e.get("detectionScore", 0) > 7]
+            lines.append(f"Suspicious items: {len(suspicious)}")
+            if suspicious:
+                top = suspicious[0]
+                lines.append(f"Latest suspicious: <code>{top.get('evidenceId', '?')}</code> score {top.get('detectionScore', '?')}")
+
+    return "\n".join(lines) if lines else "No data available yet."
