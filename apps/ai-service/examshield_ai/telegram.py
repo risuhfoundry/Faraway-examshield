@@ -529,15 +529,16 @@ class TelegramWebhook:
         data_context = _build_chat_data_context(store, lower_text)
 
         system_prompt = (
-            "You are ExamShield AI, an exam security assistant chatting in a private Telegram DM. "
-            "You are friendly, casual, and helpful — like a knowledgeable colleague. "
-            "Use the REAL DATA provided below to answer questions. "
-            "Do NOT make up numbers, evidence IDs, or threat counts. "
-            "If the data shows something, report it naturally. "
-            "If there's nothing relevant, say so honestly. "
-            "Keep responses concise (under 300 characters). "
-            "Use Telegram HTML: <b>, <i>, <code>. "
-            "Be conversational and human-like, not robotic."
+            "You are ExamShield AI, an exam security assistant in a private Telegram DM. "
+            "You are friendly and professional. "
+            "RULES:\n"
+            "- ONLY use facts from the DATA CONTEXT below. Never invent evidence IDs, scores, or counts.\n"
+            "- If the data shows alerts, report them with real IDs and scores.\n"
+            "- If asked about threats and there are none, say 'No active threats detected.'\n"
+            "- If asked about a specific evidence ID not in the data, say you don't have that info.\n"
+            "- Keep responses under 300 characters.\n"
+            "- Use Telegram HTML: <b>, <i>, <code>.\n"
+            "- Be natural and concise, not robotic."
         )
 
         user_prompt = (
@@ -772,59 +773,128 @@ def _build_chat_data_context(store: EvidenceStore | None, user_query: str) -> st
     evidence_list = data.get("evidence") or []
     alerts = data.get("alerts") or []
     activity = data.get("activity") or []
+    reports = data.get("forensicReports") or []
+    telegram_events = data.get("telegramEvents") or []
+    attributions = data.get("attributions") or []
     stats = data.get("stats") or {}
 
     lines: list[str] = []
 
-    # Always include summary stats
-    lines.append(f"Total evidence items: {stats.get('totalEvidence', len(evidence_list))}")
-    lines.append(f"Total alerts: {stats.get('totalAlerts', len(alerts))}")
+    # Always include summary stats with correct field names
+    total = stats.get("totalEvidence", len(evidence_list))
+    pending = stats.get("pendingAnalysis", 0)
+    processing = stats.get("processing", 0)
+    completed = stats.get("completed", 0)
+    failed = stats.get("failed", 0)
+    lines.append(f"EVIDENCE SUMMARY: {total} total | {completed} completed | {processing} analyzing | {pending} pending | {failed} failed")
+    lines.append(f"ALERTS: {len(alerts)} total | TELEGRAM EVENTS: {len(telegram_events)} total | REPORTS: {len(reports)} total")
 
-    # If asking about threats/alerts/recent activity, include details
-    threat_keywords = ("threat", "alert", "suspicious", "leak", "detect", "risk", "incident", "danger")
-    evidence_keywords = ("evidence", "file", "upload", "document", "ocr", "scan")
-    recent_keywords = ("recent", "latest", "history", "activity", "log", "timeline")
+    # Classify user intent
+    lower = user_query.lower()
+    want_threats = any(kw in lower for kw in ("threat", "alert", "suspicious", "leak", "risk", "incident", "danger", "warn"))
+    want_evidence = any(kw in lower for kw in ("evidence", "file", "upload", "document", "scan", "ocr"))
+    want_reports = any(kw in lower for kw in ("report", "forensic", "attribution", "paper", "match", "investigation"))
+    want_recent = any(kw in lower for kw in ("recent", "latest", "history", "activity", "log", "timeline", "what happened"))
+    want_groups = any(kw in lower for kw in ("group", "telegram", "chat", "monitor"))
+    want_stats = any(kw in lower for kw in ("stats", "summary", "overview", "status", "how many", "count"))
 
-    want_threats = any(kw in user_query for kw in threat_keywords)
-    want_evidence = any(kw in user_query for kw in evidence_keywords)
-    want_recent = any(kw in user_query for kw in recent_keywords)
-
+    # --- ALERTS ---
     if want_threats and alerts:
         lines.append("")
-        lines.append("Recent alerts:")
+        lines.append("RECENT ALERTS (newest first):")
         for alert in alerts[:5]:
-            eid = alert.get("evidenceId") or alert.get("id") or "?"
-            score = alert.get("score") or alert.get("detectionScore") or "?"
-            risk = alert.get("riskLevel") or alert.get("level") or "unknown"
-            created = alert.get("createdAt") or alert.get("timestamp") or ""
-            lines.append(f"- <code>{eid}</code> | score: {score} | risk: {risk} | {created[:16]}")
+            aid = alert.get("alertId") or "?"
+            eid = alert.get("evidenceId") or "?"
+            risk = alert.get("risk") or "unknown"
+            score = alert.get("detectionScore")
+            confidence = alert.get("confidence")
+            paper = alert.get("paperId") or "unidentified"
+            center = alert.get("centerCode") or "unknown"
+            created = alert.get("createdAt") or ""
+            score_str = f"score={score}" if score is not None else f"confidence={confidence}%" if confidence else ""
+            lines.append(f"- {aid} | evidence=<code>{eid}</code> | risk={risk} | paper={paper} | center={center} | {score_str} | {created[:16]}")
 
+    # --- EVIDENCE ---
     if want_evidence and evidence_list:
         lines.append("")
-        lines.append("Recent evidence:")
+        lines.append("RECENT EVIDENCE (newest first):")
         for ev in evidence_list[:5]:
             eid = ev.get("evidenceId") or "?"
+            fname = ev.get("filename") or "?"
             ftype = ev.get("fileType") or "?"
             status = ev.get("status") or "unknown"
-            source = ev.get("source") or ""
-            lines.append(f"- <code>{eid}</code> | type: {ftype} | status: {status} | source: {source}")
+            source = ev.get("source") or "?"
+            risk = ev.get("riskLevel") or "unknown"
+            score = ev.get("detectionScore")
+            conf = ev.get("ocrConfidence")
+            uploaded = ev.get("uploadedAt") or ""
+            score_str = f"detection={score}" if score is not None else ""
+            conf_str = f"ocr={conf}%" if conf is not None else ""
+            lines.append(f"- <code>{eid}</code> | {fname} | {ftype} | status={status} | source={source} | risk={risk} | {score_str} {conf_str} | {uploaded[:16]}")
 
+    # --- FORENSIC REPORTS ---
+    if want_reports and reports:
+        lines.append("")
+        lines.append("FORENSIC REPORTS:")
+        for rpt in reports[:5]:
+            rid = rpt.get("reportId") or "?"
+            eid = rpt.get("evidenceId") or "?"
+            status = rpt.get("status") or "?"
+            paper = rpt.get("paperIdentified") or "none"
+            center = rpt.get("centerCode") or "none"
+            final = rpt.get("finalConfidence") or 0
+            risk = rpt.get("riskLevel") or "unknown"
+            ts = rpt.get("timestamp") or ""
+            lines.append(f"- {rid} | evidence=<code>{eid}</code> | status={status} | paper={paper} | center={center} | confidence={final}% | risk={risk} | {ts[:16]}")
+
+    # --- ATTRIBUTIONS ---
+    if want_reports and attributions:
+        lines.append("")
+        lines.append("ATTRIBUTIONS:")
+        for attr in attributions[:3]:
+            aid = attr.get("attributionId") or "?"
+            paper = attr.get("matchedPaperId") or "none"
+            center = attr.get("centerCode") or "none"
+            status = attr.get("status") or "?"
+            conf = attr.get("finalConfidence") or 0
+            city = attr.get("city") or ""
+            state = attr.get("state") or ""
+            lines.append(f"- {aid} | paper={paper} | center={center} | status={status} | confidence={conf}% | {city} {state}")
+
+    # --- ACTIVITY ---
     if want_recent and activity:
         lines.append("")
-        lines.append("Recent activity:")
-        for act in activity[:5]:
-            act_type = act.get("type") or act.get("action") or "?"
-            desc = act.get("description") or act.get("message") or ""
+        lines.append("RECENT ACTIVITY (newest first):")
+        for act in activity[:8]:
+            act_type = act.get("type") or "?"
+            title = act.get("title") or ""
+            eid = act.get("evidenceId") or ""
+            detail = act.get("detail") or ""
             ts = act.get("timestamp") or ""
-            lines.append(f"- {act_type}: {desc[:120]} | {ts[:16]}")
+            lines.append(f"- [{act_type}] {title} | evidence=<code>{eid}</code> | {detail[:100]} | {ts[:16]}")
 
-    if not (want_threats or want_evidence or want_recent):
-        # Generic summary
+    # --- TELEGRAM EVENTS ---
+    if want_groups and telegram_events:
+        lines.append("")
+        lines.append("TELEGRAM EVENTS (newest first):")
+        for evt in telegram_events[:5]:
+            evid = evt.get("eventId") or "?"
+            chat = evt.get("chatId") or "?"
+            text = (evt.get("text") or "")[:80]
+            score = evt.get("detectionScore")
+            cats = evt.get("detectionCategories") or []
+            ts = evt.get("timestamp") or ""
+            lines.append(f"- {evid} | chat=<code>{chat}</code> | text=\"{text}\" | score={score} | categories={cats} | {ts[:16]}")
+
+    # --- STATS (always show if asked) ---
+    if want_stats or not (want_threats or want_evidence or want_reports or want_recent or want_groups):
         if evidence_list:
-            suspicious = [e for e in evidence_list if e.get("detectionScore", 0) > 7]
-            lines.append(f"Suspicious items: {len(suspicious)}")
+            suspicious = [e for e in evidence_list if (e.get("detectionScore") or 0) > 7]
+            high_risk = [e for e in evidence_list if e.get("riskLevel") in ("critical", "high")]
+            lines.append("")
+            lines.append(f"THREAT POSTURE: {len(suspicious)} suspicious items | {len(high_risk)} high/critical risk")
             if suspicious:
                 top = suspicious[0]
-                lines.append(f"Latest suspicious: <code>{top.get('evidenceId', '?')}</code> score {top.get('detectionScore', '?')}")
+                lines.append(f"LATEST SUSPICIOUS: <code>{top.get('evidenceId', '?')}</code> | {top.get('filename', '?')} | score={top.get('detectionScore', '?')} | risk={top.get('riskLevel', '?')}")
 
     return "\n".join(lines) if lines else "No data available yet."
